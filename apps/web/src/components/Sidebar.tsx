@@ -40,6 +40,7 @@ import {
   useRef,
   Suspense,
   useState,
+  type DragEvent as ReactDragEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -224,9 +225,15 @@ import {
   shouldShowDebugFeatureFlagsMenu,
   shouldPrunePinnedThreads,
   shouldClearThreadSelectionOnMouseDown,
+  canSidebarThreadBeDragged,
   sortProjectsForSidebar,
   sortThreadsForSidebar,
 } from "./Sidebar.logic";
+import { useSidebarThreadDrag } from "../hooks/useSidebarThreadDrag";
+import {
+  hydrateSidebarThreadOrderFromStorage,
+  readPersistedThreadOrderIdsForProject,
+} from "../lib/sidebarThreadOrder";
 import type { LastThreadRoute } from "../chatRouteRestore";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -296,6 +303,7 @@ const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
 const SIDEBAR_THREAD_SORT_LABELS: Record<SidebarThreadSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
+  manual: "Manual",
 };
 const SIDEBAR_LIST_ANIMATION_OPTIONS = {
   duration: 180,
@@ -3653,16 +3661,51 @@ export default function Sidebar() {
     () => groupSidebarThreadsByProjectId(sidebarDisplayThreads),
     [sidebarDisplayThreads],
   );
+
+  const sidebarThreadsById = useMemo(
+    () => new Map(sidebarDisplayThreads.map((thread) => [thread.id, thread] as const)),
+    [sidebarDisplayThreads],
+  );
+
+  const {
+    draggedThreadId,
+    handleDrop,
+    handleProjectDragOver,
+    handleThreadDragOver,
+    handleThreadDragStart,
+    isProjectDropTarget,
+    isThreadDropTarget,
+    resetDragState,
+    threadDropPosition,
+    threadOrderRevision,
+  } = useSidebarThreadDrag({
+    projects,
+    threadsById: sidebarThreadsById,
+    threadSortOrder: appSettings.sidebarThreadSortOrder,
+    onThreadSortOrderChange: (sortOrder) => {
+      updateSettings({ sidebarThreadSortOrder: sortOrder });
+    },
+  });
+
+  useEffect(() => {
+    hydrateSidebarThreadOrderFromStorage();
+  }, []);
+
   const sortedSidebarThreadsByProjectId = useMemo(() => {
     const byProjectId = new Map<ProjectId, SidebarThreadSummary[]>();
     for (const [projectId, projectThreads] of sidebarThreadsByProjectId) {
+      const projectCwd = projects.find((project) => project.id === projectId)?.cwd ?? "";
       byProjectId.set(
         projectId,
-        sortThreadsForSidebar(projectThreads, appSettings.sidebarThreadSortOrder),
+        sortThreadsForSidebar(
+          projectThreads,
+          appSettings.sidebarThreadSortOrder,
+          readPersistedThreadOrderIdsForProject(projectCwd),
+        ),
       );
     }
     return byProjectId;
-  }, [appSettings.sidebarThreadSortOrder, sidebarThreadsByProjectId]);
+  }, [appSettings.sidebarThreadSortOrder, projects, sidebarThreadsByProjectId, threadOrderRevision]);
   const resolveSplitPreview = useCallback(
     (threadId: ThreadId | null): SidebarSplitPreview => {
       const thread = threadId ? (sidebarThreadSummaryById[threadId] ?? null) : null;
@@ -4380,6 +4423,28 @@ export default function Sidebar() {
     );
   }
 
+  function resolveThreadDragRowClassName(threadId: ThreadId): string {
+    return cn(
+      draggedThreadId === threadId && "opacity-55",
+      isThreadDropTarget(threadId) && "ring-1 ring-inset ring-primary/45",
+    );
+  }
+
+  function bindSidebarThreadDragHandlers(thread: SidebarThreadSummary) {
+    const canDrag = canSidebarThreadBeDragged(thread) && renamingThreadId !== thread.id;
+    return {
+      draggable: canDrag,
+      onDragStart: (event: ReactDragEvent<HTMLElement>) => {
+        handleThreadDragStart(event, thread);
+      },
+      onDragEnd: resetDragState,
+      onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+        handleThreadDragOver(event, thread.projectId, thread.id);
+      },
+      onDrop: handleDrop,
+    };
+  }
+
   function renderPinnedThreadRow(thread: SidebarThreadSummary) {
     const threadTerminalState = selectThreadTerminalState(terminalStateByThreadId, thread.id);
     const threadEntryPoint = threadTerminalState.entryPoint;
@@ -4432,6 +4497,7 @@ export default function Sidebar() {
           role="button"
           tabIndex={0}
           data-thread-item
+          {...bindSidebarThreadDragHandlers(thread)}
           className={cn(
             SIDEBAR_HEADER_ROW_CLASS_NAME,
             "grid w-full items-center gap-x-1.5 transition-colors",
@@ -4442,6 +4508,7 @@ export default function Sidebar() {
             isActive
               ? SIDEBAR_ROW_ACTIVE_CLASS_NAME
               : cn(SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME, SIDEBAR_ROW_HOVER_CLASS_NAME),
+            resolveThreadDragRowClassName(thread.id),
           )}
           onPointerDown={(event) => primeThreadActivation(event, thread.id)}
           onClick={() => activateThreadFromSidebarIntent(thread.id)}
@@ -4633,6 +4700,7 @@ export default function Sidebar() {
           data-thread-entry-point={threadEntryPoint}
           size="sm"
           isActive={isActive}
+          {...bindSidebarThreadDragHandlers(thread)}
           className={cn(
             resolveThreadRowClassName({
               isActive,
@@ -4642,21 +4710,8 @@ export default function Sidebar() {
             isSubagentThread
               ? "pr-7.5"
               : resolveThreadRowTrailingReserveClass(showCompactMeta ? rightMetaChips.length : 0),
+            resolveThreadDragRowClassName(thread.id),
           )}
-          draggable={renamingThreadId !== thread.id}
-          onDragStart={(event) => {
-            const dragImage = event.currentTarget as HTMLElement | null;
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData(THREAD_DRAG_MIME, JSON.stringify({ threadId: thread.id }));
-            if (dragImage) {
-              const rect = dragImage.getBoundingClientRect();
-              event.dataTransfer.setDragImage(
-                dragImage,
-                Math.max(0, event.clientX - rect.left),
-                Math.max(0, event.clientY - rect.top),
-              );
-            }
-          }}
           onClick={(event) => {
             handleThreadClick(event, thread.id, orderedProjectThreadIds, {
               isActive,
@@ -4895,7 +4950,16 @@ export default function Sidebar() {
 
     return (
       <div className="group/collapsible">
-        <div className="group/project-header relative">
+        <div
+          className={cn(
+            "group/project-header relative rounded-md",
+            isProjectDropTarget(project.id) && "ring-1 ring-inset ring-primary/45",
+          )}
+          onDragOver={(event) => {
+            handleProjectDragOver(event, project.id);
+          }}
+          onDrop={handleDrop}
+        >
           <SidebarMenuButton
             ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
             size="sm"
@@ -6202,7 +6266,18 @@ export default function Sidebar() {
         {!isOnSettings ? <SidebarSubscriptionUsage /> : null}
         {!isOnSettings && chatsSectionVisible ? (
           <div className="group/collapsible">
-            <div className="group/project-header relative">
+            <div
+              className={cn(
+                "group/project-header relative rounded-md",
+                chatProjects[0] && isProjectDropTarget(chatProjects[0].id) && "ring-1 ring-inset ring-primary/45",
+              )}
+              onDragOver={(event) => {
+                if (chatProjects[0]) {
+                  handleProjectDragOver(event, chatProjects[0].id);
+                }
+              }}
+              onDrop={handleDrop}
+            >
               <SidebarMenuButton
                 size="sm"
                 className={cn(

@@ -103,6 +103,14 @@
     "./localImage": {
       "types": "./src/localImage.ts",
       "import": "./src/localImage.ts"
+    },
+    "./openRouterApiKey": {
+      "types": "./src/openRouterApiKey.ts",
+      "import": "./src/openRouterApiKey.ts"
+    },
+    "./openRouterVoiceTranscription": {
+      "types": "./src/openRouterVoiceTranscription.ts",
+      "import": "./src/openRouterVoiceTranscription.ts"
     }
   },
   "scripts": {

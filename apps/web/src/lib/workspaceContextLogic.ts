@@ -140,3 +140,38 @@ export function updateThreadWorkspaceContext(
     context.id === contextId ? patchThreadWorkspaceContext(context, projectCwd, patch) : context,
   );
 }
+
+/** Persisted contexts seed from the thread's primary workspace when the array is still empty. */
+export function resolveWorkspaceContextsBase(
+  existingContexts: readonly ThreadWorkspaceContext[],
+  primaryContext: ThreadWorkspaceContext,
+): ThreadWorkspaceContext[] {
+  return existingContexts.length > 0 ? [...existingContexts] : [primaryContext];
+}
+
+export function appendWorkspaceContext(
+  existingContexts: readonly ThreadWorkspaceContext[],
+  primaryContext: ThreadWorkspaceContext,
+  nextContext: ThreadWorkspaceContext,
+): ThreadWorkspaceContext[] {
+  const baseContexts = resolveWorkspaceContextsBase(existingContexts, primaryContext);
+  return [
+    ...baseContexts,
+    {
+      ...nextContext,
+      role: "context",
+    },
+  ];
+}
+
+export function resolveActiveWorkspaceContextId(
+  contexts: readonly ThreadWorkspaceContext[],
+  activeContextId: string | null,
+): string | null {
+  if (activeContextId !== null && contexts.some((context) => context.id === activeContextId)) {
+    return activeContextId;
+  }
+  return (
+    contexts.find((context) => context.role === "primary")?.id ?? contexts[0]?.id ?? null
+  );
+}

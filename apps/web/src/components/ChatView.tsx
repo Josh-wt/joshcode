@@ -292,7 +292,11 @@ import {
   deriveLatestContextWindowSnapshot,
   deriveSelectedContextWindowSnapshot,
 } from "../lib/contextWindow";
-import { formatVoiceRecordingDuration, useVoiceRecorder } from "../lib/voiceRecorder";
+import {
+  formatVoiceRecordingDuration,
+  useVoiceRecorder,
+  VoiceRecordingNoSpeechError,
+} from "../lib/voiceRecorder";
 import { shouldUseCompactComposerFooter } from "./composerFooterLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { collectTerminalIdsFromLayout } from "../terminalPaneLayout";
@@ -367,8 +371,11 @@ import { resolveRuntimeModelDescriptor } from "./chat/runtimeModelCapabilities";
 import { ProjectPicker } from "./chat/ProjectPicker";
 import { WorkspaceContextsBar } from "./chat/WorkspaceContextsBar";
 import {
+  appendWorkspaceContext,
   buildProjectWorkspaceContext,
   hasWorkspaceContextSignature,
+  resolveActiveWorkspaceContextId,
+  resolveWorkspaceContextsBase,
   updateThreadWorkspaceContext,
 } from "../lib/workspaceContextLogic";
 import { FolderClosed } from "./FolderClosed";
@@ -396,6 +403,7 @@ import {
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveComposerVoiceState,
   filterSidechatTranscriptMessages,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -600,7 +608,7 @@ function buildQueuedComposerPreviewText(input: {
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
-const VOICE_RECORDER_ACTION_ARM_DELAY_MS = 250;
+const VOICE_RECORDER_ACTION_ARM_DELAY_MS = 500;
 
 function warnVoiceGuard(event: string, details?: Record<string, unknown>) {
   if (!import.meta.env.DEV) {
@@ -1242,22 +1250,26 @@ export default function ChatView({
   const workspaceContexts = useMemo(() => {
     if (!activeThread || !activeProject) return [];
     const existingContexts = activeThread.workspaceContexts ?? [];
-    if (existingContexts.length > 0) {
-      const primaryContext = buildThreadPrimaryWorkspaceContext({
-        thread: activeThread,
-        project: activeProject,
-      });
-      return existingContexts.map((context) =>
-        context.id === primaryContext.id || context.role === "primary"
-          ? {
-              ...context,
-              ...primaryContext,
-              label: context.label ?? primaryContext.label,
-            }
-          : context,
-      );
+    if (existingContexts.length === 0) {
+      return [];
     }
-    return [buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject })];
+    const primaryContext = buildThreadPrimaryWorkspaceContext({
+      thread: activeThread,
+      project: activeProject,
+    });
+    return existingContexts.map((context) =>
+      context.id === primaryContext.id || context.role === "primary"
+        ? {
+            ...context,
+            ...primaryContext,
+            label: context.label ?? primaryContext.label,
+          }
+        : context,
+    );
+  }, [activeProject, activeThread]);
+  const threadPrimaryWorkspaceContext = useMemo(() => {
+    if (!activeThread || !activeProject) return null;
+    return buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject });
   }, [activeProject, activeThread]);
   const activeWorkspaceContextId =
     activeThread?.activeWorkspaceContextId ?? workspaceContexts[0]?.id ?? null;
@@ -1286,11 +1298,11 @@ export default function ChatView({
   const handleAddWorkspaceContext = useCallback(
     (projectId: ProjectId) => {
       const project = workspaceContextProjects.find((entry) => entry.id === projectId);
-      if (!project || !activeThread || !activeProject) return;
-      const currentContexts =
-        workspaceContexts.length > 0
-          ? workspaceContexts
-          : [buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject })];
+      if (!project || !activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
       const nextContext = buildProjectWorkspaceContext({
         project: {
           id: project.id,
@@ -1307,13 +1319,22 @@ export default function ChatView({
         });
         return;
       }
-      void persistWorkspaceContexts([...currentContexts, nextContext], activeWorkspaceContextId);
+      const nextContexts = appendWorkspaceContext(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+        nextContext,
+      );
+      void persistWorkspaceContexts(
+        nextContexts,
+        resolveActiveWorkspaceContextId(nextContexts, activeWorkspaceContextId),
+      );
     },
     [
       activeProject,
       activeThread,
       activeWorkspaceContextId,
       persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
       workspaceContextProjects,
       workspaceContexts,
     ],
@@ -1324,11 +1345,11 @@ export default function ChatView({
       patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">,
     ) => {
       const project = workspaceContextProjects.find((entry) => entry.id === projectId);
-      if (!project || !activeThread || !activeProject) return;
-      const currentContexts =
-        workspaceContexts.length > 0
-          ? workspaceContexts
-          : [buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject })];
+      if (!project || !activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
       const nextContext = buildProjectWorkspaceContext({
         project: {
           id: project.id,
@@ -1348,13 +1369,22 @@ export default function ChatView({
         });
         return;
       }
-      void persistWorkspaceContexts([...currentContexts, nextContext], activeWorkspaceContextId);
+      const nextContexts = appendWorkspaceContext(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+        nextContext,
+      );
+      void persistWorkspaceContexts(
+        nextContexts,
+        resolveActiveWorkspaceContextId(nextContexts, activeWorkspaceContextId),
+      );
     },
     [
       activeProject,
       activeThread,
       activeWorkspaceContextId,
       persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
       workspaceContextProjects,
       workspaceContexts,
     ],
@@ -1383,11 +1413,11 @@ export default function ChatView({
   }, [activeProject, activeThread, handleAddWorkspaceContext, workspaceContextProjects]);
   const handleRemoveWorkspaceContext = useCallback(
     (contextId: string) => {
-      if (!activeThread || !activeProject) return;
-      const currentContexts =
-        workspaceContexts.length > 0
-          ? workspaceContexts
-          : [buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject })];
+      if (!activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
       const nextContexts = currentContexts.filter((context) => context.id !== contextId);
       const nextActiveContextId =
         activeWorkspaceContextId === contextId
@@ -1402,6 +1432,7 @@ export default function ChatView({
       activeThread,
       activeWorkspaceContextId,
       persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
       workspaceContexts,
     ],
   );
@@ -2562,6 +2593,10 @@ export default function ChatView({
   const isCenteredEmptyLanding = timelineEntries.length === 0 && !activeThread?.parentThreadId;
   const isEmptyChatLanding =
     isCenteredEmptyLanding && Boolean(homeDir) && activeProject?.cwd === homeDir;
+  const [workspaceContextsBarOpen, setWorkspaceContextsBarOpen] = useState(true);
+  useEffect(() => {
+    setWorkspaceContextsBarOpen(isCenteredEmptyLanding);
+  }, [threadId]);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
@@ -3046,10 +3081,6 @@ export default function ChatView({
     dismissedProviderHealthBannerKeys.includes(activeProviderHealthBannerDismissalKey)
       ? null
       : activeProviderStatus;
-  const voiceProviderStatus = useMemo(
-    () => providerStatuses.find((status) => status.provider === "codex") ?? null,
-    [providerStatuses],
-  );
   const refreshVoiceStatus = useCallback(() => {
     const api = readNativeApi();
     if (!api) return;
@@ -3073,11 +3104,17 @@ export default function ChatView({
     () => formatVoiceRecordingDuration(voiceRecordingDurationMs),
     [voiceRecordingDurationMs],
   );
-  const canRenderVoiceNotes = voiceProviderStatus?.authStatus !== "unauthenticated";
-  const canStartVoiceNotes =
-    voiceProviderStatus?.authStatus !== "unauthenticated" &&
-    voiceProviderStatus?.voiceTranscriptionAvailable !== false;
-  const showVoiceNotesControl = canRenderVoiceNotes || isVoiceRecording || isVoiceTranscribing;
+  const voiceTranscriptionAvailable =
+    serverConfigQuery.data?.voiceTranscriptionAvailable === true;
+  const { canStartVoiceNotes, showVoiceNotesControl } = useMemo(
+    () =>
+      deriveComposerVoiceState({
+        voiceTranscriptionAvailable,
+        isRecording: isVoiceRecording,
+        isTranscribing: isVoiceTranscribing,
+      }),
+    [isVoiceRecording, isVoiceTranscribing, voiceTranscriptionAvailable],
+  );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const hasNativeUserMessages = useMemo(
@@ -4630,21 +4667,14 @@ export default function ChatView({
       return;
     }
     warnVoiceGuard("cancelled active voice recording because voice became unavailable", {
-      authStatus: voiceProviderStatus?.authStatus ?? null,
-      voiceTranscriptionAvailable: voiceProviderStatus?.voiceTranscriptionAvailable ?? null,
+      voiceTranscriptionAvailable,
       isVoiceRecording,
     });
     voiceTranscriptionRequestIdRef.current += 1;
     voiceRecordingStartedAtRef.current = null;
     void cancelVoiceRecording();
     setIsVoiceTranscribing(false);
-  }, [
-    canStartVoiceNotes,
-    cancelVoiceRecording,
-    isVoiceRecording,
-    voiceProviderStatus?.authStatus,
-    voiceProviderStatus?.voiceTranscriptionAvailable,
-  ]);
+  }, [canStartVoiceNotes, cancelVoiceRecording, isVoiceRecording, voiceTranscriptionAvailable]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5113,17 +5143,12 @@ export default function ChatView({
     if (!activeProject) {
       return;
     }
-    if (voiceProviderStatus?.authStatus === "unauthenticated") {
-      toastManager.add({
-        type: "error",
-        title: "Sign in to ChatGPT in Codex before using voice notes.",
-      });
-      return;
-    }
     if (!canStartVoiceNotes) {
       toastManager.add({
         type: "error",
-        title: "Voice notes require a ChatGPT-authenticated Codex session.",
+        title: "Voice transcription is not configured.",
+        description:
+          "Set OPENROUTER_API_KEY or save a key to ~/.synara/userdata/openrouter-api-key.",
       });
       return;
     }
@@ -5150,7 +5175,6 @@ export default function ChatView({
     canStartVoiceNotes,
     pendingUserInputs.length,
     startVoiceRecording,
-    voiceProviderStatus?.authStatus,
   ]);
 
   const submitComposerVoiceRecording = useCallback(async () => {
@@ -5218,6 +5242,14 @@ export default function ChatView({
       if (!isCurrentVoiceRequest()) {
         return;
       }
+      if (error instanceof VoiceRecordingNoSpeechError) {
+        toastManager.add({
+          type: "warning",
+          title: "No speech detected",
+          description: error.message,
+        });
+        return;
+      }
       const description =
         error instanceof Error
           ? sanitizeVoiceErrorMessage(error.message)
@@ -5228,10 +5260,8 @@ export default function ChatView({
       }
       toastManager.add({
         type: "error",
-        title: authExpired ? "Sign in to ChatGPT again" : "Couldn't transcribe voice note",
-        description: authExpired
-          ? "Voice transcription uses your ChatGPT session in Codex. That session was rejected, so sign in again there and retry."
-          : description,
+        title: authExpired ? "OpenRouter transcription failed" : "Couldn't transcribe voice note",
+        description,
         ...(authExpired
           ? {
               actionProps: {
@@ -7898,12 +7928,18 @@ export default function ChatView({
         <span className="min-w-0 truncate">{activeProjectDisplayName}</span>
       </span>
     ) : null;
-  const hasEmptyLandingControls =
-    isCenteredEmptyLanding &&
-    (isEmptyChatLanding || emptyLandingProjectChip || showEmptyLandingBranchToolbar);
   const hasComposerContextControls = Boolean(activeThread && activeProject);
+  const showWorkspaceContextsBar = hasComposerContextControls && workspaceContextsBarOpen;
+  const showWorkspaceContextsRevealControl =
+    hasComposerContextControls && !workspaceContextsBarOpen;
+  const showLegacyEmptyLandingControls =
+    isCenteredEmptyLanding &&
+    (isEmptyChatLanding ||
+      (workspaceContexts.length === 0 &&
+        (Boolean(emptyLandingProjectChip) || showEmptyLandingBranchToolbar)));
+  const hasEmptyLandingControls = showLegacyEmptyLandingControls;
   const composerBelowControls =
-    hasEmptyLandingControls || hasComposerContextControls ? (
+    hasEmptyLandingControls || showWorkspaceContextsBar ? (
       <div
         className={cn(
           "chat-composer-shell relative mt-0 flex flex-wrap items-center gap-x-2 gap-y-1 !rounded-t-none !rounded-b-[var(--composer-radius)] bg-[color-mix(in_srgb,var(--color-background-elevated-secondary)_76%,var(--color-background-surface)_24%)] px-2 pb-1.5 pt-2 shadow-[0_18px_36px_-26px_rgba(0,0,0,0.78)] before:pointer-events-none before:absolute before:inset-x-0 before:-top-3 before:h-3 before:bg-inherit before:content-['']",
@@ -7932,12 +7968,12 @@ export default function ChatView({
             ) : null}
           </>
         ) : null}
-        {hasComposerContextControls ? (
+        {showWorkspaceContextsBar ? (
           <WorkspaceContextsBar
             projects={workspaceContextProjects}
             contexts={workspaceContexts}
             activeContextId={activeWorkspaceContextId}
-            hidePrimaryChip={isEmptyChatLanding}
+            hidePrimaryChip={isEmptyChatLanding || workspaceContexts.length === 0}
             onBrowseFolder={() => {
               void handleBrowseFolderForContext();
             }}
@@ -7946,6 +7982,7 @@ export default function ChatView({
             onRemoveContext={handleRemoveWorkspaceContext}
             onMakePrimary={handleMakeWorkspaceContextPrimary}
             onUpdateContext={handleUpdateWorkspaceContext}
+            onDismiss={() => setWorkspaceContextsBarOpen(false)}
           />
         ) : null}
       </div>
@@ -8185,6 +8222,21 @@ export default function ChatView({
                         onToggleFastMode={toggleFastMode}
                         onSetPlanMode={setPlanMode}
                       />
+
+                      {showWorkspaceContextsRevealControl ? (
+                        <Button
+                          variant="ghost"
+                          className="shrink-0 px-2 text-[length:var(--app-font-size-ui-sm,11px)] font-normal text-[var(--color-text-foreground-secondary)] hover:bg-[var(--color-background-button-secondary-hover)] hover:text-[var(--color-text-foreground)] sm:px-3"
+                          size="sm"
+                          type="button"
+                          title="Show workspace contexts"
+                          aria-label="Show workspace contexts"
+                          onClick={() => setWorkspaceContextsBarOpen(true)}
+                        >
+                          <FolderClosed className="size-3.5" aria-hidden="true" />
+                          <span className="sr-only">Show workspace contexts</span>
+                        </Button>
+                      ) : null}
 
                       {!isVoiceRecording && !isVoiceTranscribing ? (
                         <>

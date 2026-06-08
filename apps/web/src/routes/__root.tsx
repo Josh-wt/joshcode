@@ -22,6 +22,7 @@ import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 
 import { APP_DISPLAY_NAME } from "../branding";
+import { FloatingSubscriptionsPanel } from "../components/sidebar/FloatingSubscriptionsPanel";
 import ShortcutsDialog from "../components/ShortcutsDialog";
 import WhatsNewDialog from "../components/WhatsNewDialog";
 import { useWhatsNew } from "../whatsNew/useWhatsNew";
@@ -166,6 +167,7 @@ function RootRouteView() {
         <EventRouter />
         <GlobalShortcutsDialog />
         <GlobalWhatsNewSurface />
+        <FloatingSubscriptionsPanel />
         <TaskCompletionNotifications />
         <ProviderUpdateNotifications />
         <DesktopProjectBootstrap />

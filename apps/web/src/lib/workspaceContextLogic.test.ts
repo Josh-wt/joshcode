@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  appendWorkspaceContext,
   buildProjectWorkspaceContext,
   hasWorkspaceContextSignature,
   patchThreadWorkspaceContext,
+  resolveWorkspaceContextsBase,
   updateThreadWorkspaceContext,
   workspaceContextSignature,
 } from "./workspaceContextLogic";
@@ -60,6 +62,33 @@ describe("workspaceContextLogic", () => {
     const feature = buildProjectWorkspaceContext({ project, branch: "feature/x" });
     expect(main.id).not.toBe(feature.id);
     expect(workspaceContextSignature(main)).not.toBe(workspaceContextSignature(feature));
+  });
+
+  it("seeds the thread primary workspace before the first additional context is persisted", () => {
+    const primary = {
+      id: "primary",
+      projectId: "repo-a" as const,
+      label: "Repo A",
+      role: "primary" as const,
+      accessMode: "read-write" as const,
+      cwd: "/repos/a",
+      envMode: "local" as const,
+      branch: "main",
+      worktreePath: null,
+    };
+    const projectB = {
+      id: "repo-b" as const,
+      name: "Repo B",
+      folderName: "repo-b",
+      cwd: "/repos/b",
+    };
+    const added = buildProjectWorkspaceContext({ project: projectB });
+    const next = appendWorkspaceContext([], primary, added);
+
+    expect(resolveWorkspaceContextsBase([], primary)).toEqual([primary]);
+    expect(next).toHaveLength(2);
+    expect(next[0]).toMatchObject({ id: "primary", projectId: "repo-a", role: "primary" });
+    expect(next[1]).toMatchObject({ projectId: "repo-b", role: "context" });
   });
 
   it("detects duplicate branch signatures within a context set", () => {

@@ -91,6 +91,7 @@ export const ServerConfig = Schema.Struct({
   issues: ServerConfigIssues,
   providers: ServerProviderStatuses,
   availableEditors: Schema.Array(EditorId),
+  voiceTranscriptionAvailable: Schema.optional(Schema.Boolean),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

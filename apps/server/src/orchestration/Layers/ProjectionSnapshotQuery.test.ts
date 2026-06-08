@@ -1496,4 +1496,74 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }
     }),
   );
+
+  it.effect("treats null workspace_contexts_json as an empty array when loading threads", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-null-contexts',
+          'Null Context Project',
+          '/tmp/null-context',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-02-24T00:00:00.000Z',
+          '2026-02-24T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          workspace_contexts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-null-contexts',
+          'project-null-contexts',
+          'Thread with null contexts',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          NULL,
+          '2026-02-24T00:00:02.000Z',
+          '2026-02-24T00:00:03.000Z',
+          NULL
+        )
+      `;
+
+      const readModel = yield* snapshotQuery.getCommandReadModel();
+      const thread = readModel.threads.find(
+        (row) => row.id === asThreadId("thread-null-contexts"),
+      );
+      assert.isDefined(thread);
+      assert.deepEqual(thread?.workspaceContexts, []);
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const shellThread = shellSnapshot.threads.find(
+        (row) => row.id === asThreadId("thread-null-contexts"),
+      );
+      assert.isDefined(shellThread);
+      assert.deepEqual(shellThread?.workspaceContexts, []);
+    }),
+  );
 });

@@ -4,6 +4,8 @@
 import type { ProviderKind } from "@t3tools/contracts";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 
+import { formatRateLimitResetTime } from "./rateLimits";
+
 export type OpenUsageProgressFormat =
   | { kind: "percent" }
   | { kind: "dollars" }
@@ -191,8 +193,55 @@ export function formatOpenUsageProgressSummary(line: OpenUsageProgressLine): str
   return `${Math.round(remaining)} ${line.format.suffix} left`;
 }
 
+export function formatOpenUsageResetLabel(resetsAt: string, nowMs = Date.now()): string {
+  const resetMs = Date.parse(resetsAt);
+  if (Number.isNaN(resetMs)) {
+    return "";
+  }
+
+  const diffMs = resetMs - nowMs;
+  if (diffMs <= 0) {
+    return "Reset";
+  }
+
+  const secondsLeft = Math.ceil(diffMs / 1_000);
+  if (secondsLeft < 60) {
+    return `Resets in ${secondsLeft}s`;
+  }
+
+  const minutesLeft = Math.ceil(diffMs / 60_000);
+  if (minutesLeft < 60) {
+    return `Resets in ${minutesLeft}m`;
+  }
+
+  if (diffMs < 24 * 60 * 60 * 1_000) {
+    const hoursLeft = Math.floor(minutesLeft / 60);
+    const remainingMinutes = minutesLeft % 60;
+    return remainingMinutes > 0
+      ? `Resets in ${hoursLeft}h ${remainingMinutes}m`
+      : `Resets in ${hoursLeft}h`;
+  }
+
+  const formattedResetTime = formatRateLimitResetTime(resetsAt);
+  return formattedResetTime.length > 0 ? `Resets ${formattedResetTime}` : "";
+}
+
+const CURSOR_HIDDEN_SIDEBAR_PROGRESS_LABELS = new Set(["total usage"]);
+
+function shouldHideOpenUsageSidebarProgressLine(
+  snapshot: OpenUsageProviderSnapshot,
+  line: OpenUsageProgressLine,
+): boolean {
+  if (snapshot.providerId !== "cursor" && snapshot.providerKind !== "cursor") {
+    return false;
+  }
+  return CURSOR_HIDDEN_SIDEBAR_PROGRESS_LABELS.has(line.label.trim().toLowerCase());
+}
+
 export function openUsageSidebarProgressLines(
   snapshot: OpenUsageProviderSnapshot,
 ): OpenUsageProgressLine[] {
-  return snapshot.lines.filter((line): line is OpenUsageProgressLine => line.type === "progress");
+  return snapshot.lines
+    .filter((line): line is OpenUsageProgressLine => line.type === "progress")
+    .filter((line) => !shouldHideOpenUsageSidebarProgressLine(snapshot, line));
 }

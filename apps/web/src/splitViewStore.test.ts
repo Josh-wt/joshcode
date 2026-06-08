@@ -104,6 +104,24 @@ describe("splitViewStore", () => {
     expect(splitView.focusedPaneId).toBe(root.first.id);
   });
 
+  it("creates a vertical thread split with an empty pane on the requested side", () => {
+    const store = useSplitViewStore.getState();
+    const splitViewId = store.createFromThread({
+      sourceThreadId: THREAD_A,
+      ownerProjectId: PROJECT_ID,
+      direction: "vertical",
+      emptyPaneSide: "second",
+      focusEmptyPane: true,
+    });
+
+    const splitView = snapshot(splitViewId);
+    const root = findRootSplitNode(splitView);
+    expect(root.direction).toBe("vertical");
+    expect((root.first as LeafPane).threadId).toBe(THREAD_A);
+    expect((root.second as LeafPane).threadId).toBeNull();
+    expect(splitView.focusedPaneId).toBe(root.second.id);
+  });
+
   it("keeps writing split views to the DPCode v1 storage key so persisted state can migrate", async () => {
     vi.resetModules();
     globalThis.localStorage = createMemoryStorage();

@@ -1000,7 +1000,31 @@ function getThreadSortTimestamp(
 export function sortThreadsForSidebar<T extends { id: Thread["id"] } & SidebarThreadSortInput>(
   threads: readonly T[],
   sortOrder: SidebarThreadSortOrder,
+  manualOrderIds: readonly Thread["id"][] = [],
 ): T[] {
+  if (sortOrder === "manual") {
+    const byId = new Map(threads.map((thread) => [thread.id, thread] as const));
+    const ordered: T[] = [];
+    const seen = new Set<Thread["id"]>();
+
+    for (const threadId of manualOrderIds) {
+      const thread = byId.get(threadId);
+      if (!thread || seen.has(threadId)) {
+        continue;
+      }
+      seen.add(threadId);
+      ordered.push(thread);
+    }
+
+    for (const thread of threads) {
+      if (!seen.has(thread.id)) {
+        ordered.push(thread);
+      }
+    }
+
+    return ordered;
+  }
+
   return threads.toSorted((left, right) => {
     const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
     const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
@@ -1009,6 +1033,20 @@ export function sortThreadsForSidebar<T extends { id: Thread["id"] } & SidebarTh
     if (byTimestamp !== 0) return byTimestamp;
     return right.id.localeCompare(left.id);
   });
+}
+
+export function canSidebarThreadBeDragged(thread: {
+  parentThreadId?: ThreadId | null;
+  sidechatSourceThreadId?: ThreadId | null;
+}): boolean {
+  return !thread.parentThreadId && !thread.sidechatSourceThreadId;
+}
+
+export function resolveSidebarThreadDropPosition(input: {
+  clientY: number;
+  targetRect: Pick<DOMRect, "top" | "height">;
+}): "before" | "after" {
+  return input.clientY < input.targetRect.top + input.targetRect.height / 2 ? "before" : "after";
 }
 
 export function getFallbackThreadIdAfterDelete<

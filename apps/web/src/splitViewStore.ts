@@ -68,6 +68,9 @@ export interface SplitView {
 interface CreateFromThreadInput {
   sourceThreadId: ThreadId;
   ownerProjectId: ProjectId;
+  direction?: SplitDirection;
+  emptyPaneSide?: SplitDropSide;
+  focusEmptyPane?: boolean;
 }
 
 interface CreateFromDropInput {
@@ -166,17 +169,20 @@ function buildSplitViewFromThread(input: CreateFromThreadInput): SplitView {
   const now = new Date().toISOString();
   const sourceLeaf = createLeafPane(input.sourceThreadId);
   const emptyLeaf = createLeafPane(null);
-  const root = createSplitNode({
-    direction: "horizontal",
-    first: sourceLeaf,
-    second: emptyLeaf,
-  });
+  const direction = input.direction ?? "horizontal";
+  const emptyPaneSide = input.emptyPaneSide ?? "second";
+  const root = createSplitNode(
+    emptyPaneSide === "first"
+      ? { direction, first: emptyLeaf, second: sourceLeaf }
+      : { direction, first: sourceLeaf, second: emptyLeaf },
+  );
+  const focusEmptyPane = input.focusEmptyPane ?? true;
   return {
     id: randomUUID(),
     sourceThreadId: input.sourceThreadId,
     ownerProjectId: input.ownerProjectId,
     root,
-    focusedPaneId: emptyLeaf.id,
+    focusedPaneId: focusEmptyPane ? emptyLeaf.id : sourceLeaf.id,
     createdAt: now,
     updatedAt: now,
   };

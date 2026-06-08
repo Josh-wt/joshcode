@@ -8,6 +8,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const TARGET_SAMPLE_RATE = 24_000;
 const BUFFER_SIZE = 4_096;
+const MIN_VOICE_RECORDING_MS = 400;
+const MIN_VOICE_PEAK_AMPLITUDE = 0.008;
+
+export class VoiceRecordingNoSpeechError extends Error {
+  constructor(message = "No speech was detected in the recording. Hold the mic button longer and speak clearly.") {
+    super(message);
+    this.name = "VoiceRecordingNoSpeechError";
+  }
+}
 
 export interface VoiceRecordingPayload {
   readonly audioBase64: string;
@@ -98,9 +107,10 @@ export function useVoiceRecorder() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
+          channelCount: { ideal: 1 },
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: false },
+          autoGainControl: { ideal: true },
         },
       });
       audioContext = new AudioContext();
@@ -206,6 +216,20 @@ export function useVoiceRecorder() {
       return null;
     }
 
+    const audioDurationMs = Math.max(
+      1,
+      Math.round((resampledSamples.length / TARGET_SAMPLE_RATE) * 1_000) || recorded.durationMs,
+    );
+    const peakAmplitude = measurePeakAmplitude(resampledSamples);
+    if (audioDurationMs < MIN_VOICE_RECORDING_MS) {
+      throw new VoiceRecordingNoSpeechError(
+        "Recording was too short. Hold the mic button longer and speak clearly.",
+      );
+    }
+    if (peakAmplitude < MIN_VOICE_PEAK_AMPLITUDE) {
+      throw new VoiceRecordingNoSpeechError();
+    }
+
     const wavBytes = encodeMono16BitWav(resampledSamples, TARGET_SAMPLE_RATE);
     const audioBase64 = await blobToBase64(new Blob([wavBytes], { type: "audio/wav" }));
 
@@ -213,10 +237,7 @@ export function useVoiceRecorder() {
       audioBase64,
       mimeType: "audio/wav",
       sampleRateHz: TARGET_SAMPLE_RATE,
-      durationMs: Math.max(
-        1,
-        Math.round((resampledSamples.length / TARGET_SAMPLE_RATE) * 1_000) || recorded.durationMs,
-      ),
+      durationMs: audioDurationMs,
     };
     return payload;
   }, [teardownRuntime]);
@@ -243,6 +264,17 @@ export function useVoiceRecorder() {
     stopRecording,
     cancelRecording,
   };
+}
+
+function measurePeakAmplitude(samples: Float32Array): number {
+  let peak = 0;
+  for (const sample of samples) {
+    const amplitude = Math.abs(sample);
+    if (amplitude > peak) {
+      peak = amplitude;
+    }
+  }
+  return peak;
 }
 
 function mergeFloat32Chunks(chunks: readonly Float32Array[]): Float32Array {
