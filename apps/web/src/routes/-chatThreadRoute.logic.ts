@@ -3,8 +3,11 @@
 // Layer: Route UI logic helpers.
 // Exports: thread title fallback, deep-link bootstrap replay handling, and panel toggle helpers.
 
-import type { ThreadId, TurnId } from "@t3tools/contracts";
+import { type ProjectId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import { workspaceRootsEqual } from "@t3tools/shared/threadWorkspace";
 
+import { findWorkspaceRootMatch } from "../components/Sidebar.logic";
+import { findHomeChatContainerProject } from "../lib/chatProjects";
 import type { ChatRightPanel, DiffRouteSearch } from "../diffRouteSearch";
 
 export interface ChatPanelStateSnapshot {
@@ -47,6 +50,56 @@ export type SplitPaneCloseDecision =
 
 export function resolveThreadPickerTitle(title: string | null): string {
   return title || "New chat";
+}
+
+export interface SplitPaneWorkspaceDraftPlan {
+  projectId: ProjectId;
+  envMode: "local" | "worktree";
+  worktreePath: string | null;
+}
+
+export function resolveSplitPaneWorkspaceDraftPlan(input: {
+  workspaceRoot: string;
+  homeDir: string | null;
+  projects: ReadonlyArray<{ id: ProjectId; cwd: string; kind: string }>;
+  threads: ReadonlyArray<{ projectId: ProjectId; worktreePath?: string | null }>;
+}): SplitPaneWorkspaceDraftPlan | null {
+  const matchedProject = findWorkspaceRootMatch(
+    input.projects,
+    input.workspaceRoot,
+    (project) => project.cwd,
+  );
+  const homeProject =
+    input.homeDir !== null ? findHomeChatContainerProject(input.projects, input.homeDir) : null;
+  const threadWithWorktree = input.threads.find(
+    (thread) =>
+      thread.worktreePath && workspaceRootsEqual(thread.worktreePath, input.workspaceRoot),
+  );
+  const projectId =
+    matchedProject?.id ?? homeProject?.id ?? threadWithWorktree?.projectId ?? null;
+
+  if (!projectId) {
+    return null;
+  }
+
+  const projectCwd =
+    matchedProject?.cwd ??
+    input.projects.find((project) => project.id === projectId)?.cwd ??
+    input.homeDir;
+
+  if (projectCwd && workspaceRootsEqual(projectCwd, input.workspaceRoot)) {
+    return {
+      projectId,
+      envMode: "local",
+      worktreePath: null,
+    };
+  }
+
+  return {
+    projectId,
+    envMode: "worktree",
+    worktreePath: input.workspaceRoot,
+  };
 }
 
 function createRoutePanelSearchKey(input: {

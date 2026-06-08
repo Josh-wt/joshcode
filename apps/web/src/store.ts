@@ -3146,9 +3146,14 @@ function applyOrchestrationEvent(
             (thread.updatedAt ?? thread.createdAt) > event.payload.updatedAt
               ? thread.updatedAt
               : event.payload.updatedAt;
-          const cwdChanged = thread.worktreePath !== nextWorktreePath;
+          const nextProjectId =
+            event.payload.projectId !== undefined ? event.payload.projectId : thread.projectId;
+          const cwdChanged =
+            thread.worktreePath !== nextWorktreePath || thread.projectId !== nextProjectId;
 
           if (
+            (event.payload.projectId === undefined ||
+              event.payload.projectId === thread.projectId) &&
             (event.payload.title === undefined || event.payload.title === thread.title) &&
             modelSelection === thread.modelSelection &&
             (event.payload.envMode === undefined || event.payload.envMode === thread.envMode) &&
@@ -3184,6 +3189,7 @@ function applyOrchestrationEvent(
 
           return {
             ...thread,
+            projectId: nextProjectId,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             modelSelection,
             ...(event.payload.envMode !== undefined ? { envMode: event.payload.envMode } : {}),

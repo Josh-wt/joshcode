@@ -17,8 +17,8 @@ import {
   OrchestrationThreadPullRequest,
   ThreadHandoff,
   ThreadPinnedMessages,
-  ThreadWorkspaceContext,
 } from "@t3tools/contracts";
+import { ProjectionThreadWorkspaceContextsColumn } from "../projectionThreadColumnSchemas.ts";
 
 const SqliteBoolean = Schema.Number.pipe(
   Schema.decodeTo(Schema.Boolean, {
@@ -35,12 +35,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
     pinnedMessages: Schema.NullOr(Schema.fromJsonString(ThreadPinnedMessages)),
     modelSelection: Schema.fromJsonString(ModelSelection),
-    workspaceContexts: Schema.NullOr(Schema.fromJsonString(Schema.Array(ThreadWorkspaceContext))).pipe(
-      Schema.decodeTo(Schema.Array(ThreadWorkspaceContext), {
-        decode: SchemaGetter.transform((value) => value ?? []),
-        encode: SchemaGetter.transform((value) => value),
-      }),
-    ),
+    workspaceContexts: ProjectionThreadWorkspaceContextsColumn,
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;

@@ -56,6 +56,7 @@ import { FileEntryIcon } from "./FileEntryIcon";
 import { MentionChipIcon } from "./MentionChipIcon";
 import { MessageActionButton, MESSAGE_ACTION_ICON_CLASS_NAME } from "./MessageActionButton";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { UserMessageCopyButton } from "./UserMessageCopyButton";
 import { AssistantSelectionsSummaryChip } from "./AssistantSelectionsSummaryChip";
 import {
   computeStableMessagesTimelineRows,
@@ -70,6 +71,7 @@ import { deriveInlineCommandCall } from "../../lib/toolCallLabel";
 import { isAgentActivityWorkEntry } from "./agentActivity.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { hasCopyableUserMessageContent } from "../../lib/userMessageCopy";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -765,12 +767,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                       {formatShortTimestamp(row.message.createdAt, timestampFormat)}
                     </p>
                     <div className="flex items-center gap-2">
-                      {displayedUserMessage.copyText && (
-                        <MessageCopyButton
-                          text={displayedUserMessage.copyText}
+                      {hasCopyableUserMessageContent(row.message) ? (
+                        <UserMessageCopyButton
+                          message={row.message}
                           className={MESSAGE_HOVER_REVEAL_CLASS_NAME}
                         />
-                      )}
+                      ) : null}
                       {showEditUserMessage && (
                         <MessageActionButton
                           label="Edit message"

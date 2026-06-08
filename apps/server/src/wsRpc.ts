@@ -48,6 +48,10 @@ import { ServerSettingsService } from "./serverSettings";
 import { TerminalManager } from "./terminal/Services/Manager";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem";
+import {
+  isVoiceTranscriptionConfigured,
+  transcribeVoiceWithOpenRouterSession,
+} from "./voiceTranscription.ts";
 
 const MAX_DIAGNOSTIC_CHILD_PROCESSES = 80;
 const MAX_DIAGNOSTIC_ARGS_CHARS = 500;
@@ -389,6 +393,7 @@ export const makeWsRpcLayer = () =>
           issues: keybindingsConfig.issues,
           providers: providerStatuses,
           availableEditors: resolveAvailableEditors(),
+          voiceTranscriptionAvailable: isVoiceTranscriptionConfigured(config.baseDir),
         };
       });
 
@@ -749,19 +754,17 @@ export const makeWsRpcLayer = () =>
           ),
         [WS_METHODS.serverTranscribeVoice]: (input) =>
           rpcEffect(
-            providerAdapterRegistry
-              .getByProvider(input.provider)
-              .pipe(
-                Effect.flatMap((adapter) =>
-                  adapter.transcribeVoice
-                    ? adapter.transcribeVoice(input)
-                    : Effect.fail(
-                        new Error(
-                          `Voice transcription is unavailable for provider '${input.provider}'.`,
-                        ),
-                      ),
-                ),
-              ),
+            Effect.tryPromise({
+              try: () =>
+                transcribeVoiceWithOpenRouterSession({
+                  request: input,
+                  baseDir: config.baseDir,
+                  referer: `http://${config.host}:${config.port}`,
+                  title: "Synara",
+                }),
+              catch: (error) =>
+                error instanceof Error ? error : new Error("Voice transcription failed."),
+            }),
             "Voice transcription failed",
           ),
         [WS_METHODS.serverGenerateThreadRecap]: (input) =>

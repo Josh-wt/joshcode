@@ -79,7 +79,10 @@ import {
   getRightDockPaneMeta,
 } from "../components/chat/rightDockPaneMeta";
 import { type DockPaneRuntimeMode } from "../lib/dockPaneActivation";
+import { ensureHomeChatProject } from "../lib/chatProjects";
 import { createFreshDraftThreadSeed } from "../lib/threadBootstrap";
+import { ProjectPicker } from "../components/chat/ProjectPicker";
+import { useWorkspaceStore } from "../workspaceStore";
 import {
   canComposerHandlePanelWidth,
   createPanelResizeOverlay,
@@ -109,6 +112,7 @@ import {
   resolveRoutePanelBootstrap,
   resolveSplitPaneCloseDecision,
   resolveSplitPaneMaximizeDecision,
+  resolveSplitPaneWorkspaceDraftPlan,
   resolveThreadPickerTitle,
   resolveToggledChatPanelPatch,
 } from "./-chatThreadRoute.logic";
@@ -362,6 +366,27 @@ function createFreshSplitDraftThread(projectId: ProjectId): ThreadIdType {
   return threadId;
 }
 
+function createSplitPaneDraftThreadForWorkspaceRoot(input: {
+  workspaceRoot: string;
+  homeDir: string | null;
+  projects: ReadonlyArray<{ id: ProjectId; cwd: string; kind: string }>;
+  threads: ReadonlyArray<{ projectId: ProjectId; worktreePath?: string | null }>;
+}): ThreadIdType | null {
+  const plan = resolveSplitPaneWorkspaceDraftPlan(input);
+  if (!plan) {
+    return null;
+  }
+
+  const threadId = createFreshSplitDraftThread(plan.projectId);
+  if (plan.envMode === "worktree" && plan.worktreePath) {
+    useComposerDraftStore.getState().setDraftThreadContext(threadId, {
+      envMode: "worktree",
+      worktreePath: plan.worktreePath,
+    });
+  }
+  return threadId;
+}
+
 function SplitPaneEmptyState(props: {
   isFocused: boolean;
   onFocus: () => void;
@@ -374,6 +399,7 @@ function SplitPaneEmptyState(props: {
   projects: readonly { id: ProjectId; name: string }[];
   excludedThreadIds: ReadonlySet<ThreadIdType>;
   onSelectThread: (threadId: ThreadIdType) => void;
+  onStartChatInFolder: (workspaceRoot: string) => void;
 }) {
   return (
     <div
@@ -385,7 +411,18 @@ function SplitPaneEmptyState(props: {
       onMouseDown={props.onFocus}
     >
       <div className="w-full max-w-sm space-y-4">
-        <p className="text-center text-sm font-medium text-foreground/70">Select a chat</p>
+        <div className="space-y-2 text-center">
+          <p className="text-sm font-medium text-foreground/70">Start a new chat in a folder</p>
+          <div className="flex justify-center">
+            <ProjectPicker
+              align="center"
+              side="bottom"
+              onSelectWorkspaceRoot={props.onStartChatInFolder}
+            />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <p className="text-center text-sm font-medium text-foreground/70">Or open an existing chat</p>
         <div className="max-h-[60vh] space-y-1 overflow-y-auto">
           {props.threads.map((thread) => {
             const isUsed = props.excludedThreadIds.has(thread.id);
@@ -419,6 +456,7 @@ function SplitPaneEmptyState(props: {
               </button>
             );
           })}
+        </div>
         </div>
       </div>
     </div>
@@ -734,6 +772,7 @@ function SplitPaneSurface(props: {
   onCloseThreadPane: () => void;
   onChooseThread: () => void;
   onSelectThread: (threadId: ThreadIdType) => void;
+  onStartChatInFolder: (workspaceRoot: string) => void;
   onChatMounted: () => void;
   onDropThread: (payload: {
     droppedThreadId: ThreadIdType;
@@ -804,6 +843,7 @@ function SplitPaneSurface(props: {
               projects={props.projects}
               excludedThreadIds={props.excludedThreadIds}
               onSelectThread={props.onSelectThread}
+              onStartChatInFolder={props.onStartChatInFolder}
             />
           )}
         </SidebarInset>
@@ -851,6 +891,7 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
   const removeSplitView = useSplitViewStore((store) => store.removeSplitView);
   const removePaneFromSplitView = useSplitViewStore((store) => store.removePaneFromSplitView);
   const [threadPickerPaneId, setThreadPickerPaneId] = useState<PaneId | null>(null);
+  const homeDir = useWorkspaceStore((state) => state.homeDir);
   const { splitView: activeSplitView, routePaneId } = resolveActiveSplitView({
     splitView,
     routeThreadId: props.routeThreadId,
@@ -1227,6 +1268,38 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
     });
   };
 
+  const startChatInFolderForPane = async (workspaceRoot: string, paneId: PaneId) => {
+    let resolvedProjects = projects;
+    if (
+      !resolveSplitPaneWorkspaceDraftPlan({
+        workspaceRoot,
+        homeDir,
+        projects: resolvedProjects,
+        threads,
+      }) &&
+      homeDir
+    ) {
+      await ensureHomeChatProject(homeDir);
+      resolvedProjects = useStore.getState().projects;
+    }
+
+    const threadId = createSplitPaneDraftThreadForWorkspaceRoot({
+      workspaceRoot,
+      homeDir,
+      projects: resolvedProjects,
+      threads,
+    });
+    if (!threadId) {
+      toastManager.add({
+        type: "warning",
+        title: "Folder is not available yet",
+        description: "Synara is still preparing the home chat container. Try again in a moment.",
+      });
+      return;
+    }
+    chooseThreadForPane(threadId, paneId);
+  };
+
   const renderLeaf = ({ leaf }: { leaf: LeafPane }): ReactNode => {
     const isFocused = leaf.id === activeSplitView.focusedPaneId;
     const excluded = new Set<ThreadIdType>(splitThreadIds);
@@ -1259,6 +1332,7 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
           setThreadPickerPaneId(leaf.id);
         }}
         onSelectThread={(threadId) => chooseThreadForPane(threadId, leaf.id)}
+        onStartChatInFolder={(workspaceRoot) => startChatInFolderForPane(workspaceRoot, leaf.id)}
         onChatMounted={noop}
         onDropThread={(payload) => handleDropThreadOnPane(leaf.id, payload)}
       />
@@ -1293,10 +1367,26 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
           <DialogHeader className="items-center text-center">
             <DialogTitle>Choose Chat</DialogTitle>
             <DialogDescription className="max-w-sm text-center">
-              Pick which chat should appear in the focused split pane.
+              Start a new chat in any folder or open an existing chat in this split pane.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-3">
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-foreground/70">Start a new chat in a folder</p>
+              <ProjectPicker
+                align="start"
+                side="bottom"
+                onSelectWorkspaceRoot={(workspaceRoot) => {
+                  if (!threadPickerPaneId) {
+                    return;
+                  }
+                  void startChatInFolderForPane(workspaceRoot, threadPickerPaneId);
+                  setThreadPickerPaneId(null);
+                }}
+              />
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-foreground/70">Or open an existing chat</p>
             <div className="max-h-[56vh] space-y-1 overflow-y-auto">
               {selectableThreads.map((thread) => {
                 const projectName =
@@ -1327,6 +1417,7 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
                   </button>
                 );
               })}
+            </div>
             </div>
             <DialogFooter variant="bare">
               <Button type="button" variant="outline" onClick={() => setThreadPickerPaneId(null)}>
@@ -1361,6 +1452,7 @@ function SingleChatSurface(props: {
   projectId: ProjectId | null;
 }) {
   const navigate = useNavigate();
+  const createSplitViewFromThread = useSplitViewStore((store) => store.createFromThread);
   const createSplitViewFromDrop = useSplitViewStore((store) => store.createFromDrop);
   const dockState = useRightDockStore(selectRightDockState(props.threadId));
   const openPane = useRightDockStore((store) => store.openPane);
@@ -1423,23 +1515,22 @@ function SingleChatSurface(props: {
 
   const handleSplitSurface = useCallback(() => {
     if (!props.projectId) return;
-    const splitThreadId = createFreshSplitDraftThread(props.projectId);
-    const splitViewId = createSplitViewFromDrop({
+    const splitViewId = createSplitViewFromThread({
       sourceThreadId: props.threadId,
       ownerProjectId: props.projectId,
-      droppedThreadId: splitThreadId,
       direction: "vertical",
-      side: "second",
+      emptyPaneSide: "second",
+      focusEmptyPane: true,
     });
     startTransition(() => {
       void navigate({
         to: "/$threadId",
-        params: { threadId: splitThreadId },
+        params: { threadId: props.threadId },
         replace: true,
         search: () => ({ splitViewId }),
       });
     });
-  }, [createSplitViewFromDrop, navigate, props.projectId, props.threadId]);
+  }, [createSplitViewFromThread, navigate, props.projectId, props.threadId]);
 
   const handleDropThread = useCallback(
     (payload: { threadId: ThreadIdType; direction: SplitDirection; side: SplitDropSide }) => {

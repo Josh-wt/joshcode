@@ -212,7 +212,12 @@ export function sanitizeVoiceErrorMessage(message: string): string {
 
 export function isVoiceAuthExpiredMessage(message: string): boolean {
   const normalized = message.toLowerCase();
-  return normalized.includes("chatgpt login has expired") || normalized.includes("sign in again");
+  return (
+    normalized.includes("openrouter rejected the transcription request") ||
+    normalized.includes("openrouter api key is not configured") ||
+    normalized.includes("chatgpt login has expired") ||
+    normalized.includes("sign in again")
+  );
 }
 
 export function describeVoiceRecordingStartError(error: unknown): string {
@@ -243,22 +248,19 @@ export function describeVoiceRecordingStartError(error: unknown): string {
 }
 
 export function deriveComposerVoiceState(input: {
-  authStatus: ServerProviderAuthStatus | null | undefined;
-  voiceTranscriptionAvailable: boolean | undefined;
+  voiceTranscriptionAvailable: boolean;
   isRecording: boolean;
   isTranscribing: boolean;
 }): {
-  canRenderVoiceNotes: boolean;
   canStartVoiceNotes: boolean;
   showVoiceNotesControl: boolean;
 } {
-  const canRenderVoiceNotes = input.authStatus !== "unauthenticated";
-  const canStartVoiceNotes = canRenderVoiceNotes && input.voiceTranscriptionAvailable !== false;
+  const canStartVoiceNotes = input.voiceTranscriptionAvailable;
 
   return {
-    canRenderVoiceNotes,
     canStartVoiceNotes,
-    showVoiceNotesControl: canRenderVoiceNotes || input.isRecording || input.isTranscribing,
+    showVoiceNotesControl:
+      input.voiceTranscriptionAvailable || input.isRecording || input.isTranscribing,
   };
 }
 

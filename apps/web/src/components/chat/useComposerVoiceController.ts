@@ -3,11 +3,11 @@
 // Layer: Chat composer hook
 // Depends on: useVoiceRecorder, ChatView voice helper logic, and the native API voice endpoint.
 
-import { type ProviderKind, type ServerProviderStatus, type ThreadId } from "@t3tools/contracts";
+import { type ProviderKind, type ThreadId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Project } from "../../types";
-import { formatVoiceRecordingDuration, useVoiceRecorder } from "../../lib/voiceRecorder";
+import { formatVoiceRecordingDuration, useVoiceRecorder, VoiceRecordingNoSpeechError } from "../../lib/voiceRecorder";
 import { readNativeApi } from "../../nativeApi";
 import { toastManager } from "../ui/toast";
 import {
@@ -22,7 +22,7 @@ interface UseComposerVoiceControllerOptions {
   activeThreadId: ThreadId | null;
   threadId: ThreadId;
   selectedProvider: ProviderKind;
-  activeProviderStatus: ServerProviderStatus | null;
+  voiceTranscriptionAvailable: boolean;
   pendingUserInputCount: number;
   onTranscriptReady: (transcript: string) => void;
   refreshVoiceStatus: () => void;
@@ -48,7 +48,7 @@ export function useComposerVoiceController(
     activeThreadId,
     threadId,
     selectedProvider,
-    activeProviderStatus,
+    voiceTranscriptionAvailable,
     pendingUserInputCount,
     onTranscriptReady,
     refreshVoiceStatus,
@@ -75,17 +75,11 @@ export function useComposerVoiceController(
   const { canStartVoiceNotes, showVoiceNotesControl } = useMemo(
     () =>
       deriveComposerVoiceState({
-        authStatus: activeProviderStatus?.authStatus,
-        voiceTranscriptionAvailable: activeProviderStatus?.voiceTranscriptionAvailable,
+        voiceTranscriptionAvailable,
         isRecording: isVoiceRecording,
         isTranscribing: isVoiceTranscribing,
       }),
-    [
-      activeProviderStatus?.authStatus,
-      activeProviderStatus?.voiceTranscriptionAvailable,
-      isVoiceRecording,
-      isVoiceTranscribing,
-    ],
+    [isVoiceRecording, isVoiceTranscribing, voiceTranscriptionAvailable],
   );
 
   useEffect(() => {
@@ -107,17 +101,12 @@ export function useComposerVoiceController(
     if (!activeProject) {
       return;
     }
-    if (activeProviderStatus?.authStatus === "unauthenticated") {
-      toastManager.add({
-        type: "error",
-        title: "Sign in to ChatGPT in Codex before using voice notes.",
-      });
-      return;
-    }
     if (!canStartVoiceNotes) {
       toastManager.add({
         type: "error",
-        title: "Voice notes require a ChatGPT-authenticated Codex session.",
+        title: "Voice transcription is not configured.",
+        description:
+          "Set OPENROUTER_API_KEY or save a key to ~/.synara/userdata/openrouter-api-key.",
       });
       return;
     }
@@ -138,13 +127,7 @@ export function useComposerVoiceController(
         description: describeVoiceRecordingStartError(error),
       });
     }
-  }, [
-    activeProject,
-    activeProviderStatus?.authStatus,
-    canStartVoiceNotes,
-    pendingUserInputCount,
-    startVoiceRecording,
-  ]);
+  }, [activeProject, canStartVoiceNotes, pendingUserInputCount, startVoiceRecording]);
 
   const submitComposerVoiceRecording = useCallback(async () => {
     if (!activeProject || !isVoiceRecording) {
@@ -198,6 +181,15 @@ export function useComposerVoiceController(
         return;
       }
 
+      if (error instanceof VoiceRecordingNoSpeechError) {
+        toastManager.add({
+          type: "warning",
+          title: "No speech detected",
+          description: error.message,
+        });
+        return;
+      }
+
       const description =
         error instanceof Error
           ? sanitizeVoiceErrorMessage(error.message)
@@ -208,10 +200,8 @@ export function useComposerVoiceController(
       }
       toastManager.add({
         type: "error",
-        title: authExpired ? "Sign in to ChatGPT again" : "Voice transcription failed",
-        description: authExpired
-          ? "Voice transcription uses your ChatGPT session in Codex. That session was rejected, so sign in again there and retry."
-          : description,
+        title: authExpired ? "OpenRouter transcription failed" : "Voice transcription failed",
+        description,
         ...(authExpired
           ? {
               actionProps: {
@@ -240,8 +230,8 @@ export function useComposerVoiceController(
 
   const cancelComposerVoiceRecording = useCallback(() => {
     voiceTranscriptionRequestIdRef.current += 1;
-    setIsVoiceTranscribing(false);
     void cancelVoiceRecording();
+    setIsVoiceTranscribing(false);
   }, [cancelVoiceRecording]);
 
   return {

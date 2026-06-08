@@ -2557,11 +2557,14 @@ function configureMediaPermissions(): void {
     return;
   }
 
-  defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+  defaultSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin, details) => {
     if (permission === "media") {
-      return process.platform === "darwin"
-        ? systemPreferences.getMediaAccessStatus("microphone") === "granted"
-        : false;
+      if (process.platform === "darwin") {
+        return systemPreferences.getMediaAccessStatus("microphone") === "granted";
+      }
+      // Linux/Windows rely on the request handler for audio-only prompts; denying
+      // every media check suppresses microphone capture in the renderer.
+      return shouldAllowMediaPermissionRequest(details);
     }
     return false;
   });

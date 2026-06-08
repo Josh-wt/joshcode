@@ -1,19 +1,73 @@
 import { ThreadId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
+import { ProjectId } from "@t3tools/contracts";
+
 import {
   resolveRoutePanelBootstrap,
   resolveSplitPaneCloseDecision,
   resolveSplitPaneMaximizeDecision,
+  resolveSplitPaneWorkspaceDraftPlan,
   resolveThreadPickerTitle,
   resolveToggledChatPanelPatch,
 } from "./-chatThreadRoute.logic";
+
+const PROJECT_A = ProjectId.makeUnsafe("project-a");
+const PROJECT_HOME = ProjectId.makeUnsafe("project-home");
+const HOME_DIR = "/home/user";
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-1");
 const SIDECHAT_THREAD_ID = ThreadId.makeUnsafe("thread-sidechat");
 const OTHER_THREAD_ID = ThreadId.makeUnsafe("thread-2");
 const TURN_ID = TurnId.makeUnsafe("turn-1");
 const OTHER_TURN_ID = TurnId.makeUnsafe("turn-2");
+
+describe("resolveSplitPaneWorkspaceDraftPlan", () => {
+  it("uses local mode for a registered project folder", () => {
+    expect(
+      resolveSplitPaneWorkspaceDraftPlan({
+        workspaceRoot: "/repos/app",
+        homeDir: HOME_DIR,
+        projects: [{ id: PROJECT_A, cwd: "/repos/app", kind: "project" }],
+        threads: [],
+      }),
+    ).toEqual({
+      projectId: PROJECT_A,
+      envMode: "local",
+      worktreePath: null,
+    });
+  });
+
+  it("uses the home chat container with worktree mode for arbitrary folders", () => {
+    expect(
+      resolveSplitPaneWorkspaceDraftPlan({
+        workspaceRoot: "/repos/other-app",
+        homeDir: HOME_DIR,
+        projects: [{ id: PROJECT_HOME, cwd: HOME_DIR, kind: "chat", name: "Home" }],
+        threads: [],
+      }),
+    ).toEqual({
+      projectId: PROJECT_HOME,
+      envMode: "worktree",
+      worktreePath: "/repos/other-app",
+    });
+  });
+
+  it("falls back to an existing thread project when only worktree history exists", () => {
+    expect(
+      resolveSplitPaneWorkspaceDraftPlan({
+        workspaceRoot: "/repos/legacy",
+        homeDir: null,
+        projects: [],
+        threads: [{ projectId: PROJECT_A, worktreePath: "/repos/legacy" }],
+      }),
+    ).toEqual({
+      projectId: PROJECT_A,
+      envMode: "worktree",
+      worktreePath: "/repos/legacy",
+    });
+  });
+});
 
 describe("resolveThreadPickerTitle", () => {
   it("falls back to a stable untitled label", () => {

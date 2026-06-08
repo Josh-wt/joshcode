@@ -699,12 +699,43 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.meta.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const projectIdChanging =
+        command.projectId !== undefined && command.projectId !== thread.projectId;
+      if (projectIdChanging) {
+        yield* requireProject({
+          readModel,
+          command,
+          projectId: command.projectId!,
+        });
+        if (thread.parentThreadId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' is a subagent and cannot be moved to another project.`,
+          });
+        }
+        if (thread.sidechatSourceThreadId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' is a sidechat and cannot be moved to another project.`,
+          });
+        }
+      }
       const occurredAt = nowIso();
+      const workspaceResetForProjectMove =
+        projectIdChanging && command.envMode === undefined
+          ? {
+              envMode: "local" as const,
+              worktreePath: null,
+              branch: null,
+              workspaceContexts: [] as const,
+              activeWorkspaceContextId: null,
+            }
+          : {};
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -715,6 +746,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(projectIdChanging ? { projectId: command.projectId } : {}),
+          ...workspaceResetForProjectMove,
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }

@@ -114,9 +114,9 @@ describe("voice helpers", () => {
   it("strips desktop bridge wrappers from voice errors", () => {
     expect(
       sanitizeVoiceErrorMessage(
-        "Error invoking remote method 'desktop:server-transcribe-voice': Error: The transcription response did not include any text.",
+        "Error invoking remote method 'desktop:server-transcribe-voice': Error: No speech was detected in the recording. Hold the mic button longer and speak clearly.",
       ),
-    ).toBe("The transcription response did not include any text.");
+    ).toBe("No speech was detected in the recording. Hold the mic button longer and speak clearly.");
   });
 
   it("detects auth-expired copy in sanitized voice errors", () => {
@@ -131,29 +131,25 @@ describe("voice helpers", () => {
     expect(describeVoiceRecordingStartError(error)).toContain("Microphone access was denied");
   });
 
-  it("derives voice-note availability from provider auth and runtime state", () => {
+  it("derives voice-note availability from OpenRouter configuration and runtime state", () => {
     expect(
       deriveComposerVoiceState({
-        authStatus: "authenticated",
         voiceTranscriptionAvailable: true,
         isRecording: false,
         isTranscribing: false,
       }),
     ).toEqual({
-      canRenderVoiceNotes: true,
       canStartVoiceNotes: true,
       showVoiceNotesControl: true,
     });
 
     expect(
       deriveComposerVoiceState({
-        authStatus: "unauthenticated",
-        voiceTranscriptionAvailable: true,
+        voiceTranscriptionAvailable: false,
         isRecording: true,
         isTranscribing: false,
       }),
     ).toEqual({
-      canRenderVoiceNotes: false,
       canStartVoiceNotes: false,
       showVoiceNotesControl: true,
     });

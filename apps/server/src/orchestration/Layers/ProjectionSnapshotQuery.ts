@@ -18,7 +18,6 @@ import {
   ProviderSkillReference,
   ThreadId,
   ThreadEnvironmentMode,
-  ThreadWorkspaceContext,
   TurnDispatchMode,
   TurnId,
   type OrchestrationCheckpointSummary,
@@ -52,6 +51,7 @@ import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionT
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
+import { ProjectionThreadWorkspaceContextsColumn } from "../../persistence/projectionThreadColumnSchemas.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -96,6 +96,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
     pinnedMessages: Schema.NullOr(Schema.fromJsonString(ThreadPinnedMessages)),
     modelSelection: ModelSelectionJsonUnknown,
+    workspaceContexts: ProjectionThreadWorkspaceContextsColumn,
   }),
 );
 const {
@@ -110,7 +111,7 @@ const ProjectionThreadShellDbRowSchema = Schema.Struct(ProjectionThreadShellFiel
     handoff: Schema.NullOr(Schema.fromJsonString(ThreadHandoff)),
     lastKnownPr: Schema.NullOr(Schema.fromJsonString(OrchestrationThreadPullRequest)),
     modelSelection: ModelSelectionJsonUnknown,
-    workspaceContexts: Schema.NullOr(Schema.fromJsonString(Schema.Array(ThreadWorkspaceContext))),
+    workspaceContexts: ProjectionThreadWorkspaceContextsColumn,
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -670,6 +671,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           env_mode AS "envMode",
           branch,
           worktree_path AS "worktreePath",
+          workspace_contexts_json AS "workspaceContexts",
+          active_workspace_context_id AS "activeWorkspaceContextId",
           associated_worktree_path AS "associatedWorktreePath",
           associated_worktree_branch AS "associatedWorktreeBranch",
           associated_worktree_ref AS "associatedWorktreeRef",

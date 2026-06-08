@@ -74,6 +74,76 @@ export async function copyTextToClipboard(value: string): Promise<void> {
   throw new Error("Clipboard API unavailable.");
 }
 
+export async function copyRichContentToClipboard(input: {
+  text?: string;
+  blobs?: ReadonlyArray<Blob>;
+}): Promise<void> {
+  const text = input.text?.trim() ?? "";
+  const blobs = (input.blobs ?? []).filter((blob) => blob.size > 0);
+
+  if (text.length === 0 && blobs.length === 0) {
+    return;
+  }
+
+  if (blobs.length === 0) {
+    await copyTextToClipboard(text);
+    return;
+  }
+
+  if (typeof window === "undefined" || typeof ClipboardItem === "undefined") {
+    if (text.length > 0) {
+      await copyTextToClipboard(text);
+      return;
+    }
+    throw new Error("Clipboard API unavailable.");
+  }
+
+  const clipboard = navigator.clipboard;
+  if (!clipboard?.write) {
+    if (text.length > 0) {
+      await copyTextToClipboard(text);
+      return;
+    }
+    throw new Error("Clipboard API unavailable.");
+  }
+
+  const items: ClipboardItem[] = [];
+  if (text.length > 0) {
+    items.push(
+      new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+      }),
+    );
+  }
+
+  for (const blob of blobs) {
+    const mimeType = blob.type.trim() || "application/octet-stream";
+    items.push(
+      new ClipboardItem({
+        [mimeType]: blob,
+      }),
+    );
+  }
+
+  try {
+    await clipboard.write(items);
+  } catch (error) {
+    if (text.length > 0 && (await tryCopyTextAfterRichClipboardFailure(text))) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function tryCopyTextAfterRichClipboardFailure(text: string): Promise<boolean> {
+  try {
+    await copyTextToClipboard(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function useCopyToClipboard<TContext = void>({
   timeout = 2000,
   onCopy,

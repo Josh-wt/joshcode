@@ -185,9 +185,13 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS = {
   manual: "Manual order",
 } as const;
 
-const SIDEBAR_THREAD_SORT_ORDER_LABELS = {
+const SIDEBAR_THREAD_SORT_ORDER_LABELS: Record<
+  import("../appSettings").SidebarThreadSortOrder,
+  string
+> = {
   updated_at: "Recently active",
   created_at: "Newest first",
+  manual: "Manual order",
 } as const;
 
 type InstallBinarySettingsKey =
@@ -1516,7 +1520,7 @@ function SettingsRouteView() {
             <SettingsSelectControl
               value={settings.sidebarThreadSortOrder}
               onValueChange={(value) => {
-                if (value !== "updated_at" && value !== "created_at") {
+                if (value !== "updated_at" && value !== "created_at" && value !== "manual") {
                   return;
                 }
                 updateSettings({ sidebarThreadSortOrder: value });
@@ -1529,6 +1533,9 @@ function SettingsRouteView() {
               </SelectItem>
               <SelectItem hideIndicator value="created_at">
                 {SIDEBAR_THREAD_SORT_ORDER_LABELS.created_at}
+              </SelectItem>
+              <SelectItem hideIndicator value="manual">
+                {SIDEBAR_THREAD_SORT_ORDER_LABELS.manual}
               </SelectItem>
             </SettingsSelectControl>
           }

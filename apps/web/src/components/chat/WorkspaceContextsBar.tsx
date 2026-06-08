@@ -228,16 +228,14 @@ function WorkspaceContextChip(props: {
           Set primary
         </button>
       )}
-      {props.context.id !== "primary" ? (
-        <button
-          type="button"
-          className="ml-0.5 rounded-full text-muted-foreground hover:text-foreground"
-          aria-label={`Remove ${label} context`}
-          onClick={props.onRemove}
-        >
-          <XIcon className="size-3" />
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="ml-0.5 rounded-full text-muted-foreground hover:text-foreground"
+        aria-label={`Remove ${label} context`}
+        onClick={props.onRemove}
+      >
+        <XIcon className="size-3" />
+      </button>
     </span>
   );
 }
@@ -330,6 +328,7 @@ export function WorkspaceContextsBar(props: {
     contextId: string,
     patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">,
   ) => void;
+  onDismiss?: () => void;
 }) {
   const representedProjectIds = useMemo(
     () => new Set(props.contexts.map((context) => context.projectId)),
@@ -352,7 +351,7 @@ export function WorkspaceContextsBar(props: {
     : props.contexts;
 
   return (
-    <div className={cn("flex min-h-8 items-center text-xs", props.className)}>
+    <div className={cn("flex min-h-8 items-center gap-1.5 text-xs", props.className)}>
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
         {visibleContexts.map((context) => {
           const project = props.projects.find((entry) => entry.id === context.projectId);
@@ -427,6 +426,17 @@ export function WorkspaceContextsBar(props: {
           </ComposerPickerMenuPopup>
         </Menu>
       </div>
+      {props.onDismiss ? (
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center rounded-md px-1.5 py-1 text-muted-foreground/72 transition-colors hover:bg-muted/25 hover:text-foreground"
+          aria-label="Hide workspace contexts"
+          title="Hide contexts"
+          onClick={props.onDismiss}
+        >
+          <XIcon className="size-3" aria-hidden="true" />
+        </button>
+      ) : null}
     </div>
   );
 }
