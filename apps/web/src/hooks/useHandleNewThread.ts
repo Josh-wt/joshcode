@@ -36,7 +36,7 @@ export function useHandleNewThread() {
   const markTemporaryThread = useTemporaryThreadStore((store) => store.markTemporaryThread);
 
   const handleNewThread = useCallback(
-    (projectId: ProjectId, options?: NewThreadOptions): Promise<void> => {
+    (projectId: ProjectId, options?: NewThreadOptions): Promise<ThreadId> => {
       const entryPoint = options?.entryPoint ?? "chat";
       const wantsTemporaryThread = options?.temporary === true;
       const applyProviderOverride = (threadId: ThreadId) => {
@@ -173,7 +173,7 @@ export function useHandleNewThread() {
         );
       };
       if (bootstrapPlan.kind === "stored") {
-        return (async () => {
+        return (async (): Promise<ThreadId> => {
           if (wantsTemporaryThread) {
             markTemporaryThread(bootstrapPlan.threadId);
           }
@@ -205,7 +205,7 @@ export function useHandleNewThread() {
                 ),
               );
             }
-            return;
+            return bootstrapPlan.threadId;
           }
           await navigate({
             to: "/$threadId",
@@ -222,34 +222,37 @@ export function useHandleNewThread() {
               ),
             );
           }
+          return bootstrapPlan.threadId;
         })();
       }
 
       clearProjectDraftThreadId(projectId, entryPoint);
 
       if (bootstrapPlan.kind === "route") {
-        if (wantsTemporaryThread) {
-          markTemporaryThread(bootstrapPlan.threadId);
-        }
-        const preservedComposerDraft =
-          useComposerDraftStore.getState().draftsByThreadId[bootstrapPlan.threadId] ?? null;
-        let resolvedActiveDraftThread: DraftThreadState | null = bootstrapPlan.draftThread;
-        const draftContextPatch = buildDraftThreadContextPatch(entryPoint, options);
-        if (draftContextPatch) {
-          setDraftThreadContext(bootstrapPlan.threadId, draftContextPatch);
-          resolvedActiveDraftThread = getDraftThread(bootstrapPlan.threadId);
-        }
-        applyProviderOverride(bootstrapPlan.threadId);
-        setProjectDraftThreadId(projectId, bootstrapPlan.threadId, { entryPoint });
-        restoreComposerDraft(bootstrapPlan.threadId, preservedComposerDraft);
-        activateThreadEntryPoint(bootstrapPlan.threadId);
-        if (entryPoint === "terminal") {
-          return createTerminalThread(
-            bootstrapPlan.threadId,
-            resolveCreationState(bootstrapPlan.threadId, resolvedActiveDraftThread, options),
-          );
-        }
-        return Promise.resolve();
+        return (async (): Promise<ThreadId> => {
+          if (wantsTemporaryThread) {
+            markTemporaryThread(bootstrapPlan.threadId);
+          }
+          const preservedComposerDraft =
+            useComposerDraftStore.getState().draftsByThreadId[bootstrapPlan.threadId] ?? null;
+          let resolvedActiveDraftThread: DraftThreadState | null = bootstrapPlan.draftThread;
+          const draftContextPatch = buildDraftThreadContextPatch(entryPoint, options);
+          if (draftContextPatch) {
+            setDraftThreadContext(bootstrapPlan.threadId, draftContextPatch);
+            resolvedActiveDraftThread = getDraftThread(bootstrapPlan.threadId);
+          }
+          applyProviderOverride(bootstrapPlan.threadId);
+          setProjectDraftThreadId(projectId, bootstrapPlan.threadId, { entryPoint });
+          restoreComposerDraft(bootstrapPlan.threadId, preservedComposerDraft);
+          activateThreadEntryPoint(bootstrapPlan.threadId);
+          if (entryPoint === "terminal") {
+            await createTerminalThread(
+              bootstrapPlan.threadId,
+              resolveCreationState(bootstrapPlan.threadId, resolvedActiveDraftThread, options),
+            );
+          }
+          return bootstrapPlan.threadId;
+        })();
       }
 
       const threadId = newThreadId();
@@ -257,7 +260,7 @@ export function useHandleNewThread() {
         markTemporaryThread(threadId);
       }
       const createdAt = new Date().toISOString();
-      return (async () => {
+      return (async (): Promise<ThreadId> => {
         setProjectDraftThreadId(projectId, threadId, {
           ...createFreshDraftThreadSeed({
             createdAt,
@@ -279,6 +282,7 @@ export function useHandleNewThread() {
             resolveCreationState(threadId, getDraftThread(threadId), options),
           );
         }
+        return threadId;
       })();
     },
     [

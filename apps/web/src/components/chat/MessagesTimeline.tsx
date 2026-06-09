@@ -7,9 +7,11 @@ import {
   type MessageId,
   type ProviderMentionReference,
   ThreadId,
+  type ThreadMarker,
   type TurnId,
 } from "@t3tools/contracts";
 import { resolveLatestTailUserMessageEditTarget } from "@t3tools/shared/conversationEdit";
+import { pluralize } from "@t3tools/shared/text";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import {
   memo,
@@ -24,9 +26,10 @@ import {
   type RefObject,
   type ReactNode,
 } from "react";
-import { deriveTimelineEntries } from "../../session-logic";
+import { deriveTimelineEntries, isFileChangeWorkLogEntry } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
+import { InlineLinkChip } from "../InlineLinkChip";
 import {
   BotIcon,
   CheckIcon,
@@ -52,6 +55,7 @@ import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImage
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel } from "./DiffStatLabel";
+import { ReviewChangesButton } from "./ReviewChangesButton";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { MentionChipIcon } from "./MentionChipIcon";
 import { MessageActionButton, MESSAGE_ACTION_ICON_CLASS_NAME } from "./MessageActionButton";
@@ -96,7 +100,7 @@ import {
 import { splitPromptIntoDisplaySegments } from "~/composer-editor-mentions";
 import {
   COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
-  COMPOSER_INLINE_CHIP_TOKEN_ICON_CLASS_NAME,
+  COMPOSER_INLINE_CHIP_INLINE_ICON_CLASS_NAME,
   COMPOSER_INLINE_AGENT_CHIP_CLASS_NAME,
   COMPOSER_INLINE_AGENT_CHIP_ICON_CLASS_NAME,
   COMPOSER_INLINE_MENTION_CHIP_CLASS_NAME,
@@ -128,6 +132,9 @@ import { RiRobot3Line } from "react-icons/ri";
 import { deriveUserMessagePreviewState } from "./userMessagePreview";
 
 const MAX_VISIBLE_INLINE_TOOL_ENTRIES = 4;
+// Changed-files list in the per-turn card is capped so large turns stay compact;
+// the rest are revealed via an inline "Show more" row.
+const MAX_VISIBLE_CHANGED_FILES = 5;
 // The composer overlaps the transcript by design, so the list needs extra tail
 // space beyond the overlap to keep final cards from sitting flush against it.
 const MIN_BOTTOM_CONTENT_INSET_PX = 64;
@@ -135,6 +142,13 @@ const MESSAGE_HOVER_REVEAL_CLASS_NAME =
   "opacity-0 transition-opacity pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
 // How long a jumped-to message keeps its highlight tint before fading back out.
 const JUMP_HIGHLIGHT_DURATION_MS = 1200;
+const MARKER_FINE_SCROLL_RETRY_TIMEOUT_MS = 900;
+const MARKER_FINE_SCROLL_MAX_RETRY_FRAMES = 90;
+// The deep-link "active" ring is applied imperatively to the rendered marker spans so jumping
+// never re-parses a message's markdown tree (the className is purely a CSS box-shadow).
+const ACTIVE_MARKER_CLASS_NAME = "thread-marker-active";
+const EMPTY_MESSAGE_MARKERS: readonly ThreadMarker[] = [];
+const EMPTY_THREAD_MARKERS_BY_MESSAGE_ID = new Map<MessageId, readonly ThreadMarker[]>();
 
 /**
  * Imperative handle the transcript exposes so the Environment panel's pinned-message
@@ -142,6 +156,7 @@ const JUMP_HIGHLIGHT_DURATION_MS = 1200;
  */
 export interface MessagesTimelineController {
   scrollToMessage: (messageId: MessageId) => void;
+  scrollToMarker: (marker: ThreadMarker) => void;
 }
 
 const AgentTaskIcon: LucideIcon = (props) => (
@@ -188,6 +203,38 @@ function basename(value: string): string {
   return slash >= 0 ? value.slice(slash + 1) : value;
 }
 
+function cssAttributeSelectorValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function getMonotonicTimeMs(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
+}
+
+// A marker can split into several spans when its range crosses markdown nodes, so collect every
+// rendered span for the marker (used both to scroll into view and to decorate the active ring).
+function collectThreadMarkerElements(
+  root: ParentNode | null,
+  marker: Pick<ThreadMarker, "id" | "messageId">,
+): HTMLElement[] {
+  if (!root) {
+    return [];
+  }
+  const messageId = cssAttributeSelectorValue(marker.messageId);
+  const markerId = cssAttributeSelectorValue(marker.id);
+  const selector = `[data-assistant-message-id="${messageId}"] [data-thread-marker-id="${markerId}"]`;
+  return Array.from(root.querySelectorAll<HTMLElement>(selector));
+}
+
+function findVisibleThreadMarkerElement(elements: readonly HTMLElement[]): HTMLElement | null {
+  for (const element of elements) {
+    if (element.getClientRects().length > 0) {
+      return element;
+    }
+  }
+  return null;
+}
+
 interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
@@ -202,6 +249,8 @@ interface MessagesTimelineProps {
   pinnedMessageIds?: ReadonlySet<MessageId>;
   /** Toggle a message's pinned state from the assistant footer. */
   onTogglePinMessage?: (messageId: MessageId) => void;
+  /** Text markers for assistant messages in the active thread. */
+  threadMarkers?: readonly ThreadMarker[];
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   nowIso?: string;
@@ -251,6 +300,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   controllerRef,
   pinnedMessageIds,
   onTogglePinMessage,
+  threadMarkers = [],
   timelineEntries,
   turnDiffSummaryByAssistantMessageId,
   nowIso,
@@ -336,6 +386,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedFileChangesByTurnId, setExpandedFileChangesByTurnId] = useState<
     Record<string, boolean>
   >({});
+  // Tracks which turns have their changed-files list expanded past MAX_VISIBLE_CHANGED_FILES.
+  const [expandedFileListByTurnId, setExpandedFileListByTurnId] = useState<Record<string, boolean>>(
+    {},
+  );
   const [expandedUserMessagesById, setExpandedUserMessagesById] = useState<Record<string, boolean>>(
     {},
   );
@@ -344,30 +398,51 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     useState<MessageId | null>(null);
   // Transient highlight applied to a message jumped-to from the pinned-message checklist.
   const [highlightedMessageId, setHighlightedMessageId] = useState<MessageId | null>(null);
+  // Index markers once per update so each assistant row avoids a full marker scan.
+  const threadMarkersByMessageId = useMemo<ReadonlyMap<MessageId, readonly ThreadMarker[]>>(() => {
+    if (threadMarkers.length === 0) {
+      return EMPTY_THREAD_MARKERS_BY_MESSAGE_ID;
+    }
+    const byMessageId = new Map<MessageId, ThreadMarker[]>();
+    for (const marker of threadMarkers) {
+      const messageMarkers = byMessageId.get(marker.messageId);
+      if (messageMarkers) {
+        messageMarkers.push(marker);
+      } else {
+        byMessageId.set(marker.messageId, [marker]);
+      }
+    }
+    return byMessageId;
+  }, [threadMarkers]);
   const timelineExtraData = useMemo(
     () => ({
       editingUserMessageId,
       expandedCollapsedWork,
       expandedFileChangesByTurnId,
+      expandedFileListByTurnId,
       expandedUserMessagesById,
       expandedWorkGroupsState,
       highlightedMessageId,
       pinnedMessageIds,
       submittingEditedUserMessageId,
+      threadMarkersByMessageId,
     }),
     [
       editingUserMessageId,
       expandedCollapsedWork,
       expandedFileChangesByTurnId,
+      expandedFileListByTurnId,
       expandedUserMessagesById,
       expandedWorkGroupsState,
       highlightedMessageId,
       pinnedMessageIds,
       submittingEditedUserMessageId,
+      threadMarkersByMessageId,
     ],
   );
   const fallbackListRef = useRef<LegendListRef | null>(null);
   const resolvedListRef = listRef ?? fallbackListRef;
+  const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const bottomSpacerHeightPx = Math.max(bottomContentInsetPx ?? 0, MIN_BOTTOM_CONTENT_INSET_PX);
   const listFooter = useMemo(
     () => <div aria-hidden="true" style={{ height: bottomSpacerHeightPx }} />,
@@ -403,39 +478,110 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     rowsRef.current = rows;
   }, [rows]);
   const jumpHighlightTimeoutRef = useRef<number | null>(null);
+  const markerFineScrollFrameRef = useRef<number | null>(null);
+  // Marker spans currently carrying the deep-link "active" ring, tracked so the decoration can be
+  // toggled imperatively (no markdown re-parse) and reliably cleared on the next jump or teardown.
+  const decoratedMarkerElementsRef = useRef<HTMLElement[]>([]);
+  const clearActiveMarkerDecoration = useCallback(() => {
+    for (const element of decoratedMarkerElementsRef.current) {
+      element.classList.remove(ACTIVE_MARKER_CLASS_NAME);
+    }
+    decoratedMarkerElementsRef.current = [];
+  }, []);
+  const applyActiveMarkerDecoration = useCallback(
+    (elements: readonly HTMLElement[]) => {
+      clearActiveMarkerDecoration();
+      for (const element of elements) {
+        element.classList.add(ACTIVE_MARKER_CLASS_NAME);
+      }
+      decoratedMarkerElementsRef.current = [...elements];
+    },
+    [clearActiveMarkerDecoration],
+  );
   useEffect(
     () => () => {
       if (jumpHighlightTimeoutRef.current !== null) {
         window.clearTimeout(jumpHighlightTimeoutRef.current);
       }
+      if (markerFineScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(markerFineScrollFrameRef.current);
+      }
+      clearActiveMarkerDecoration();
     },
-    [],
+    [clearActiveMarkerDecoration],
   );
   useEffect(() => {
     if (!controllerRef) {
       return;
     }
-    const controller: MessagesTimelineController = {
-      scrollToMessage: (messageId) => {
-        const index = rowsRef.current.findIndex(
-          (row) => row.kind === "message" && row.message.id === messageId,
-        );
-        if (index < 0) {
+    const scrollToMessage = (messageId: MessageId) => {
+      const index = rowsRef.current.findIndex(
+        (row) => row.kind === "message" && row.message.id === messageId,
+      );
+      if (index < 0) {
+        return false;
+      }
+      void resolvedListRef.current?.scrollToIndex({
+        index,
+        animated: true,
+        viewPosition: 0.2,
+      });
+      return true;
+    };
+    const clearJumpHighlightAfterDelay = () => {
+      if (jumpHighlightTimeoutRef.current !== null) {
+        window.clearTimeout(jumpHighlightTimeoutRef.current);
+      }
+      jumpHighlightTimeoutRef.current = window.setTimeout(() => {
+        setHighlightedMessageId(null);
+        clearActiveMarkerDecoration();
+        jumpHighlightTimeoutRef.current = null;
+      }, JUMP_HIGHLIGHT_DURATION_MS);
+    };
+    const cancelPendingMarkerFineScroll = () => {
+      if (markerFineScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(markerFineScrollFrameRef.current);
+        markerFineScrollFrameRef.current = null;
+      }
+    };
+    const scheduleMarkerFineScroll = (marker: ThreadMarker) => {
+      cancelPendingMarkerFineScroll();
+      const deadlineMs = getMonotonicTimeMs() + MARKER_FINE_SCROLL_RETRY_TIMEOUT_MS;
+      let attempts = 0;
+      const tick = () => {
+        markerFineScrollFrameRef.current = null;
+        const elements = collectThreadMarkerElements(timelineRootRef.current, marker);
+        const visibleElement = findVisibleThreadMarkerElement(elements);
+        if (visibleElement) {
+          applyActiveMarkerDecoration(elements);
+          visibleElement.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
           return;
         }
-        void resolvedListRef.current?.scrollToIndex({
-          index,
-          animated: true,
-          viewPosition: 0.2,
-        });
-        setHighlightedMessageId(messageId);
-        if (jumpHighlightTimeoutRef.current !== null) {
-          window.clearTimeout(jumpHighlightTimeoutRef.current);
+        attempts += 1;
+        if (getMonotonicTimeMs() <= deadlineMs && attempts < MARKER_FINE_SCROLL_MAX_RETRY_FRAMES) {
+          markerFineScrollFrameRef.current = window.requestAnimationFrame(tick);
         }
-        jumpHighlightTimeoutRef.current = window.setTimeout(() => {
-          setHighlightedMessageId(null);
-          jumpHighlightTimeoutRef.current = null;
-        }, JUMP_HIGHLIGHT_DURATION_MS);
+      };
+      markerFineScrollFrameRef.current = window.requestAnimationFrame(tick);
+    };
+    const controller: MessagesTimelineController = {
+      scrollToMessage: (messageId) => {
+        cancelPendingMarkerFineScroll();
+        clearActiveMarkerDecoration();
+        if (!scrollToMessage(messageId)) {
+          return;
+        }
+        setHighlightedMessageId(messageId);
+        clearJumpHighlightAfterDelay();
+      },
+      scrollToMarker: (marker) => {
+        clearActiveMarkerDecoration();
+        if (!scrollToMessage(marker.messageId)) {
+          return;
+        }
+        setHighlightedMessageId(marker.messageId);
+        clearJumpHighlightAfterDelay();
+        scheduleMarkerFineScroll(marker);
       },
     };
     controllerRef.current = controller;
@@ -444,7 +590,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         controllerRef.current = null;
       }
     };
-  }, [controllerRef, resolvedListRef]);
+  }, [controllerRef, resolvedListRef, applyActiveMarkerDecoration, clearActiveMarkerDecoration]);
   const tailContentRowId = useMemo(() => {
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index]!;
@@ -532,6 +678,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       [turnId]: !(current[turnId] ?? true),
     }));
   }, []);
+  const toggleFileListExpanded = useCallback((turnId: TurnId) => {
+    setExpandedFileListByTurnId((current) => ({
+      ...current,
+      [turnId]: !(current[turnId] ?? false),
+    }));
+  }, []);
   const cancelUserMessageEdit = useCallback(() => {
     setEditingUserMessageId(null);
   }, []);
@@ -600,6 +752,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     chatMetaFontSizePx={appTypographyScale.chatMetaPx}
                     textFontSizePx={normalizedChatFontSizePx}
                     density={prefersCompactWorkEntryRow(workEntry) ? "compact" : "default"}
+                    markdownCwd={markdownCwd}
+                    onImageExpand={onImageExpand}
                     {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                     {...(onOpenThread ? { onOpenThread } : {})}
                   />
@@ -813,6 +967,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         row.message.role === "assistant" &&
         (() => {
           const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+          const messageMarkers =
+            threadMarkersByMessageId.get(row.message.id) ?? EMPTY_MESSAGE_MARKERS;
           const inlineWorkEntries = row.inlineWorkEntries ?? [];
           const inlineToolEntries = inlineWorkEntries.filter((entry) => entry.tone === "tool");
           const inlineStatusEntries = inlineWorkEntries.filter((entry) => entry.tone !== "tool");
@@ -894,13 +1050,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     open={isCollapsedWorkExpanded}
                     onOpenChange={(open) => {
                       setCollapsedWorkExpanded(row.message.id, open);
-                      if (open && isTailContentRow) {
-                        scrollTailExpansionToEnd();
-                      }
                     }}
                   >
                     <CollapsibleTrigger
-                      data-scroll-anchor-ignore={isTailContentRow ? true : undefined}
+                      // ChatView's click anchor preserves this trigger's screen position
+                      // while the disclosure height animates, so opening it should not tail-scroll.
                       // -ml-0.5 optically aligns the leading "W" with the reply
                       // text below: the box is already flush, but the W glyph
                       // carries a left side-bearing that reads as an inset.
@@ -934,6 +1088,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                               density={
                                 prefersCompactWorkEntryRow(item.entry) ? "compact" : "default"
                               }
+                              markdownCwd={markdownCwd}
+                              onImageExpand={onImageExpand}
                               {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                               {...(onOpenThread ? { onOpenThread } : {})}
                             />
@@ -966,6 +1122,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     isStreaming={Boolean(row.message.streaming)}
                     style={chatTypographyStyle}
                     onImageExpand={onImageExpand}
+                    markers={messageMarkers}
                   />
                 </div>
                 {!hasCollapsedWork && visibleRenderableInlineToolEntries.length > 0 && (
@@ -979,6 +1136,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                           textFontSizePx={normalizedChatFontSizePx}
                           density="compact"
                           fileDiffStatByPath={fileDiffStatByPath}
+                          markdownCwd={markdownCwd}
+                          onImageExpand={onImageExpand}
                           onOpenTurnDiff={onOpenTurnDiff}
                           {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                           {...(onOpenThread ? { onOpenThread } : {})}
@@ -1012,6 +1171,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         chatMetaFontSizePx={appTypographyScale.chatMetaPx}
                         textFontSizePx={normalizedChatFontSizePx}
                         density={prefersCompactWorkEntryRow(workEntry) ? "compact" : "default"}
+                        markdownCwd={markdownCwd}
+                        onImageExpand={onImageExpand}
                         {...(onOpenAgentActivity ? { onOpenAgentActivity } : {})}
                         {...(onOpenThread ? { onOpenThread } : {})}
                       />
@@ -1094,6 +1255,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   if (checkpointFiles.length === 0) return null;
                   const fileChangesExpanded =
                     expandedFileChangesByTurnId[turnSummary.turnId] ?? true;
+                  const fileListExpanded = expandedFileListByTurnId[turnSummary.turnId] ?? false;
                   const correspondingUserMessageId = userMessageIdByAssistantMessageId.get(
                     row.message.id,
                   );
@@ -1108,12 +1270,52 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     (sum, file) => sum + (file.deletions ?? 0),
                     0,
                   );
-                  const editedFilesLabel =
-                    checkpointFiles.length === 1
-                      ? "Edited 1 file"
-                      : `Edited ${checkpointFiles.length} files`;
+                  const editedFilesLabel = `Edited ${checkpointFiles.length} ${pluralize(
+                    checkpointFiles.length,
+                    "file",
+                  )}`;
+                  const firstCheckpointFiles = checkpointFiles.slice(0, MAX_VISIBLE_CHANGED_FILES);
+                  const overflowCheckpointFiles = checkpointFiles.slice(MAX_VISIBLE_CHANGED_FILES);
+                  const renderCheckpointFileRow = (
+                    file: (typeof checkpointFiles)[number],
+                    withFirstReset: boolean,
+                  ) => (
+                    <button
+                      key={file.path}
+                      type="button"
+                      className={cn(
+                        "group/file-row flex w-full items-center gap-2 border-t border-[color:var(--color-border-light)] bg-transparent px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-background-button-secondary-hover)] dark:bg-transparent dark:hover:bg-transparent",
+                        withFirstReset && "first:border-t-0",
+                      )}
+                      onClick={() => onOpenTurnDiff(turnSummary.turnId, file.path)}
+                    >
+                      <FileEntryIcon
+                        pathValue={file.path}
+                        kind="file"
+                        theme={resolvedTheme}
+                        className="size-4 shrink-0 text-[var(--color-text-foreground)] opacity-70 dark:opacity-80"
+                      />
+                      <span
+                        className="font-system-ui truncate font-normal text-[var(--color-text-foreground)] underline-offset-2 group-hover/file-row:underline group-focus-visible/file-row:underline"
+                        style={{ fontSize: chatTypographyStyle.fontSize }}
+                      >
+                        {file.path}
+                      </span>
+                      {(file.additions ?? 0) + (file.deletions ?? 0) > 0 && (
+                        <span
+                          className="font-system-ui ml-auto shrink-0 tabular-nums"
+                          style={{ fontSize: chatTypographyStyle.fontSize }}
+                        >
+                          <DiffStatLabel
+                            additions={file.additions ?? 0}
+                            deletions={file.deletions ?? 0}
+                          />
+                        </span>
+                      )}
+                    </button>
+                  );
                   return (
-                    <div className="mt-1 mb-4 overflow-hidden rounded-[0.65rem] border border-[color:var(--color-border-light)]">
+                    <div className="mt-1 mb-4 overflow-hidden rounded-[0.65rem] border border-[color:var(--color-border-light)] dark:border-[color:color-mix(in_srgb,var(--color-border-light)_55%,transparent)]">
                       <div
                         className={cn(
                           "flex items-center justify-between gap-3 bg-[var(--app-user-message-background)] px-3 py-1.5",
@@ -1155,14 +1357,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                               <Undo2Icon className="size-3" />
                             </button>
                           )}
-                          <button
-                            type="button"
-                            className="rounded-md border border-[color:var(--color-border-light)] px-2.5 py-0.5 text-foreground/90 transition-colors hover:bg-[var(--color-background-button-secondary-hover)] hover:text-foreground"
+                          <ReviewChangesButton
                             style={{ fontSize: chatTypographyStyle.fontSize }}
                             onClick={() => onOpenTurnDiff(turnSummary.turnId)}
-                          >
-                            Review
-                          </button>
+                          />
                           <button
                             type="button"
                             className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground/70 transition-colors hover:bg-[var(--color-background-button-secondary-hover)] hover:text-foreground/80"
@@ -1201,40 +1399,37 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                             />
                           </div>
                         ) : (
-                          checkpointFiles.map((file) => (
-                            <button
-                              key={file.path}
-                              type="button"
-                              className="group/file-row flex w-full items-center gap-2 border-t border-[color:var(--color-border-light)] bg-transparent px-3 py-2.5 text-left first:border-t-0 transition-colors hover:bg-[var(--color-background-button-secondary-hover)] dark:bg-transparent dark:hover:bg-transparent"
-                              onClick={() => onOpenTurnDiff(turnSummary.turnId, file.path)}
-                            >
-                              <FileEntryIcon
-                                pathValue={file.path}
-                                kind="file"
-                                theme={resolvedTheme}
-                                className="size-4 shrink-0 text-[var(--color-text-foreground)] opacity-70 dark:opacity-80"
-                              />
-                              <span
-                                className="font-system-ui truncate font-normal text-[var(--color-text-foreground)] underline-offset-2 group-hover/file-row:underline group-focus-visible/file-row:underline"
-                                style={{
-                                  fontSize: chatTypographyStyle.fontSize,
-                                }}
+                          <>
+                            {firstCheckpointFiles.map((file) =>
+                              renderCheckpointFileRow(file, true),
+                            )}
+                            {overflowCheckpointFiles.length > 0 ? (
+                              <DisclosureRegion open={fileListExpanded}>
+                                {overflowCheckpointFiles.map((file) =>
+                                  renderCheckpointFileRow(file, false),
+                                )}
+                              </DisclosureRegion>
+                            ) : null}
+                            {overflowCheckpointFiles.length > 0 ? (
+                              <button
+                                type="button"
+                                className="flex w-full items-center justify-start gap-1.5 border-t border-[color:var(--color-border-light)] bg-transparent px-3 py-2 font-system-ui font-normal text-muted-foreground transition-colors hover:bg-[var(--color-background-button-secondary-hover)] hover:text-foreground"
+                                style={{ fontSize: chatTypographyStyle.fontSize }}
+                                aria-expanded={fileListExpanded}
+                                onClick={() => toggleFileListExpanded(turnSummary.turnId)}
                               >
-                                {file.path}
-                              </span>
-                              {(file.additions ?? 0) + (file.deletions ?? 0) > 0 && (
-                                <span
-                                  className="font-system-ui ml-auto shrink-0 tabular-nums"
-                                  style={{ fontSize: chatTypographyStyle.fontSize }}
-                                >
-                                  <DiffStatLabel
-                                    additions={file.additions ?? 0}
-                                    deletions={file.deletions ?? 0}
-                                  />
+                                <DisclosureChevron open={fileListExpanded} />
+                                <span>
+                                  {fileListExpanded
+                                    ? "Show less"
+                                    : `Show ${overflowCheckpointFiles.length} more ${pluralize(
+                                        overflowCheckpointFiles.length,
+                                        "file",
+                                      )}`}
                                 </span>
-                              )}
-                            </button>
-                          ))
+                              </button>
+                            ) : null}
+                          </>
                         )}
                       </DisclosureRegion>
                     </div>
@@ -1292,38 +1487,40 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }
 
   return (
-    <LegendList<MessagesTimelineRow>
-      ref={resolvedListRef}
-      data={rows}
-      keyExtractor={(row) => row.id}
-      renderItem={({ item }) => renderRowContent(item)}
-      estimatedItemSize={90}
-      // LegendList caches rendered rows, so every local expansion map that changes row content
-      // has to be surfaced through extraData.
-      extraData={timelineExtraData}
-      initialScrollAtEnd
-      maintainScrollAtEnd={followLiveOutput}
-      maintainScrollAtEndThreshold={0.1}
-      maintainVisibleContentPosition
-      onClickCapture={onMessagesClickCapture}
-      onMouseUp={onMessagesMouseUp}
-      onPointerCancel={onMessagesPointerCancel}
-      onPointerDown={onMessagesPointerDown}
-      onPointerUp={onMessagesPointerUp}
-      onScroll={handleListScroll}
-      onTouchEnd={onMessagesTouchEnd}
-      onTouchMove={onMessagesTouchMove}
-      onTouchStart={onMessagesTouchStart}
-      onWheel={onMessagesWheel}
-      data-chat-scroll-container="true"
-      ListFooterComponent={listFooter}
-      className={cn(
-        "h-full overflow-x-hidden overscroll-y-contain py-3 [scrollbar-gutter:stable] sm:py-4",
-        ENVIRONMENT_CONTENT_INSET_MOTION_CLASS,
-        CHAT_COLUMN_GUTTER_CLASS_NAME,
-      )}
-      {...(listScrollStyle ? { style: listScrollStyle } : {})}
-    />
+    <div ref={timelineRootRef} className="contents" data-messages-timeline-root="true">
+      <LegendList<MessagesTimelineRow>
+        ref={resolvedListRef}
+        data={rows}
+        keyExtractor={(row) => row.id}
+        renderItem={({ item }) => renderRowContent(item)}
+        estimatedItemSize={90}
+        // LegendList caches rendered rows, so every local expansion map that changes row content
+        // has to be surfaced through extraData.
+        extraData={timelineExtraData}
+        initialScrollAtEnd
+        maintainScrollAtEnd={followLiveOutput}
+        maintainScrollAtEndThreshold={0.1}
+        maintainVisibleContentPosition
+        onClickCapture={onMessagesClickCapture}
+        onMouseUp={onMessagesMouseUp}
+        onPointerCancel={onMessagesPointerCancel}
+        onPointerDown={onMessagesPointerDown}
+        onPointerUp={onMessagesPointerUp}
+        onScroll={handleListScroll}
+        onTouchEnd={onMessagesTouchEnd}
+        onTouchMove={onMessagesTouchMove}
+        onTouchStart={onMessagesTouchStart}
+        onWheel={onMessagesWheel}
+        data-chat-scroll-container="true"
+        ListFooterComponent={listFooter}
+        className={cn(
+          "h-full overflow-x-hidden overscroll-y-contain py-3 [scrollbar-gutter:stable] sm:py-4",
+          ENVIRONMENT_CONTENT_INSET_MOTION_CLASS,
+          CHAT_COLUMN_GUTTER_CLASS_NAME,
+        )}
+        {...(listScrollStyle ? { style: listScrollStyle } : {})}
+      />
+    </div>
   );
 });
 
@@ -1416,7 +1613,7 @@ const UserMessageInlineSkillChip = memo(function UserMessageInlineSkillChip(prop
     <span className={COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME}>
       <CentralIcon
         name={COMPOSER_INLINE_SKILL_CHIP_ICON_NAME}
-        className={COMPOSER_INLINE_CHIP_TOKEN_ICON_CLASS_NAME}
+        className={COMPOSER_INLINE_CHIP_INLINE_ICON_CLASS_NAME}
       />
       <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>
         {formatComposerSkillChipLabel(props.skillName)}
@@ -1502,9 +1699,16 @@ function renderUserMessageInlineText(
         />,
       ];
     }
+    if (segment.type === "link") {
+      return [<UserMessageInlineLinkChip key={`${key}:link`} url={segment.url} />];
+    }
     return [];
   });
 }
+
+const UserMessageInlineLinkChip = memo(function UserMessageInlineLinkChip(props: { url: string }) {
+  return <InlineLinkChip url={props.url} interactive />;
+});
 
 const UserMessageInlineMentionChip = memo(function UserMessageInlineMentionChip(props: {
   path: string;
@@ -2016,7 +2220,7 @@ function splitWorkEntryActionText(value: string): { action: string; rest: string
 }
 
 function isFileChangeWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return workEntry.requestKind === "file-change" || workEntry.itemType === "file_change";
+  return isFileChangeWorkLogEntry(workEntry);
 }
 
 function subagentPrimaryLabel(
@@ -2110,6 +2314,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   textFontSizePx?: number;
   density?: "default" | "compact";
   fileDiffStatByPath?: ReadonlyMap<string, { additions: number; deletions: number }>;
+  markdownCwd: string | undefined;
+  onImageExpand: (preview: ExpandedImagePreview) => void;
   turnId?: TurnId;
   onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
   onOpenAgentActivity?: (activityId: string) => void;
@@ -2121,6 +2327,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     textFontSizePx = chatMetaFontSizePx,
     density = "default",
     fileDiffStatByPath,
+    markdownCwd,
+    onImageExpand,
     turnId,
     onOpenTurnDiff,
     onOpenAgentActivity,
@@ -2146,7 +2354,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     Boolean(preview) &&
     normalizeWorkDisplayText(heading) !== normalizeWorkDisplayText(preview ?? "");
   const rawCommand = workEntry.rawCommand ?? workEntry.command;
-  const hoverText = rawCommand ?? displayText;
+  const hoverText = rawCommand ?? (showInlineAgentTaskPreview ? heading : displayText);
   const changedFiles = workEntry.changedFiles ?? [];
   const showEditedRows = isFileChangeWorkEntry(workEntry) && changedFiles.length > 0;
   const showSubagentRows =
@@ -2389,17 +2597,18 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                     >
                       {heading}
                     </p>
-                    <p
-                      className="text-muted-foreground/42"
+                    <ChatMarkdown
+                      text={preview ?? ""}
+                      cwd={markdownCwd}
+                      isStreaming={false}
+                      className="leading-relaxed"
                       style={{
+                        color: "color-mix(in srgb, var(--muted-foreground) 72%, transparent)",
                         fontSize: `${Math.max(11, rowFontSizePx - 1)}px`,
                         lineHeight: compact ? "18px" : "19px",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
                       }}
-                    >
-                      {preview}
-                    </p>
+                      onImageExpand={onImageExpand}
+                    />
                   </div>
                 ) : (
                   <p

@@ -12,9 +12,9 @@ import type { QueuedComposerTurn } from "../../composerDraftStore";
 import { SteerIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import {
-  COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME,
-  COMPOSER_SURFACE_BORDER_CLASS_NAME,
-} from "./composerPickerStyles";
+  COMPOSER_STACKED_PANEL_DIVIDER_CLASS_NAME,
+  ComposerStackedPanel,
+} from "./ComposerStackedPanel";
 import { QueuedComposerActions } from "./QueuedComposerActions";
 
 interface ComposerQueuedHeaderProps {
@@ -22,6 +22,7 @@ interface ComposerQueuedHeaderProps {
   onSteer: (queuedTurn: QueuedComposerTurn) => void;
   onRemove: (queuedTurnId: string) => void;
   onEdit: (queuedTurn: QueuedComposerTurn) => void;
+  attachedToPrevious?: boolean;
 }
 
 export const ComposerQueuedHeader = memo(function ComposerQueuedHeader({
@@ -29,26 +30,21 @@ export const ComposerQueuedHeader = memo(function ComposerQueuedHeader({
   onSteer,
   onRemove,
   onEdit,
+  attachedToPrevious = false,
 }: ComposerQueuedHeaderProps) {
   if (queuedTurns.length === 0) {
     return null;
   }
 
   return (
-    <div
-      className={cn(
-        "chat-composer-surface chat-composer-stacked-top relative z-[1] flex flex-col overflow-hidden border border-b-0",
-        COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME,
-        COMPOSER_SURFACE_BORDER_CLASS_NAME,
-      )}
-    >
+    <ComposerStackedPanel attachedToPrevious={attachedToPrevious} className="flex flex-col">
       {queuedTurns.map((queuedTurn, queuedTurnIndex) => (
         <div
           key={queuedTurn.id}
           data-testid="queued-follow-up-row"
           className={cn(
             "flex items-center gap-2 px-3 pt-2.5 pb-2.5 text-[12px]",
-            queuedTurnIndex > 0 && `border-t ${COMPOSER_SURFACE_BORDER_CLASS_NAME}`,
+            queuedTurnIndex > 0 && COMPOSER_STACKED_PANEL_DIVIDER_CLASS_NAME,
           )}
         >
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -65,6 +61,6 @@ export const ComposerQueuedHeader = memo(function ComposerQueuedHeader({
           />
         </div>
       ))}
-    </div>
+    </ComposerStackedPanel>
   );
 });

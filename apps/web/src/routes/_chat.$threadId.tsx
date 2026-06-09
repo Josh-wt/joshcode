@@ -166,6 +166,7 @@ const LazyDiffPanel = (props: {
   ) => void;
   onClosePanel?: () => void;
   liveRefreshEnabled?: boolean;
+  queriesEnabled?: boolean;
 }) => {
   return (
     <DiffWorkerPoolProvider>
@@ -179,6 +180,7 @@ const LazyDiffPanel = (props: {
           {...(props.liveRefreshEnabled !== undefined
             ? { liveRefreshEnabled: props.liveRefreshEnabled }
             : {})}
+          {...(props.queriesEnabled !== undefined ? { queriesEnabled: props.queriesEnabled } : {})}
         />
       </Suspense>
     </DiffWorkerPoolProvider>
@@ -286,7 +288,7 @@ function SplitPaneEmbeddedPanel(props: {
     <div
       ref={wrapperRef}
       data-native-browser-surface={props.panel === "browser" ? "true" : undefined}
-      className="relative flex h-full min-h-0 min-w-0 flex-none border-l border-sidebar-border bg-card text-foreground"
+      className="relative flex h-full min-h-0 min-w-0 flex-none border-l border-[var(--app-surface-divider)] bg-card text-foreground"
       style={
         {
           width: `${panelWidth}px`,
@@ -296,7 +298,7 @@ function SplitPaneEmbeddedPanel(props: {
       }
     >
       <div
-        className="absolute inset-y-0 left-0 z-20 w-2 -translate-x-1/2 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-sidebar-border"
+        className="absolute inset-y-0 left-0 z-20 w-2 -translate-x-1/2 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[var(--app-surface-divider)]"
         onPointerDown={startResize}
       />
       {props.panel === "browser" ? (
@@ -333,9 +335,7 @@ function normalizeSingleSearchFromPane(
       panel: "diff",
       diff: "1",
       ...(panelState.diffTurnId ? { diffTurnId: panelState.diffTurnId } : {}),
-      ...(panelState.diffTurnId && panelState.diffFilePath
-        ? { diffFilePath: panelState.diffFilePath }
-        : {}),
+      ...(panelState.diffFilePath ? { diffFilePath: panelState.diffFilePath } : {}),
     };
   }
   return {};
@@ -632,8 +632,6 @@ function ChatMountSkeleton() {
         CHAT_BACKGROUND_CLASS_NAME,
       )}
     >
-      {/* Mirrors the real chat shell so route changes paint immediately while ChatView mounts
-          on the next frames. */}
       <div className={cn(CHAT_SURFACE_HEADER_ROW_CLASS_NAME, "gap-3 px-4")}>
         <div className="size-5 rounded-full bg-muted" />
         <div className="min-w-0 flex-1 space-y-1.5">
@@ -653,11 +651,6 @@ function ChatMountSkeleton() {
         <div className="ml-auto max-w-[70%] space-y-2 rounded-2xl bg-muted/45 p-3">
           <div className="h-2.5 w-48 max-w-full rounded-full bg-muted-foreground/14" />
           <div className="h-2.5 w-32 max-w-[78%] rounded-full bg-muted-foreground/12" />
-        </div>
-        <div className="max-w-[88%] space-y-2 rounded-2xl border border-[color:var(--color-border-light)] bg-muted/22 p-3">
-          <div className="h-2.5 w-full rounded-full bg-muted/75" />
-          <div className="h-2.5 w-10/12 rounded-full bg-muted/60" />
-          <div className="h-2.5 w-5/12 rounded-full bg-muted/50" />
         </div>
       </div>
       <div className="shrink-0 border-t border-[color:var(--color-border-light)] p-3">
@@ -1738,6 +1731,8 @@ function SingleChatSurface(props: {
                 })
               }
               onClosePanel={() => closePane(props.threadId, pane.id)}
+              liveRefreshEnabled={context.isActive && dockState.open}
+              queriesEnabled={context.isActive && dockState.open}
             />
           );
         case "terminal":
@@ -1769,7 +1764,7 @@ function SingleChatSurface(props: {
             return <RightDockPanePlaceholder kind="sidechat" />;
           }
           if (context.runtimeMode === "preview") {
-            return <ChatMountSkeleton />;
+            return null;
           }
           return (
             <DeferredChatView
@@ -1916,7 +1911,7 @@ function ChatThreadRouteView() {
   ]);
 
   if (!threadsHydrated || !splitViewsHydrated) {
-    return <ChatMountSkeleton />;
+    return null;
   }
 
   if (splitView && search.splitViewId) {
@@ -1924,7 +1919,7 @@ function ChatThreadRouteView() {
   }
 
   if (!routeThreadExists) {
-    return <ChatMountSkeleton />;
+    return null;
   }
 
   return <SingleChatSurface threadId={threadId} search={search} projectId={activeProjectId} />;

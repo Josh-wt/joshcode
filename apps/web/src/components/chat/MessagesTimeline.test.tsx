@@ -832,7 +832,8 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("@spark");
-    expect(markup).toContain("inline-flex max-w-full select-none items-center gap-1 mx-0.5");
+    expect(markup).toContain("inline-flex max-w-full select-none items-center gap-0.5");
+    expect(markup).toContain("mx-0.5");
     expect(markup).toContain("rounded-md px-1.5 py-0.5");
     expect(markup).toContain("(check the UI)");
     expect(markup).not.toContain("@spark(check the UI)</div>");
@@ -973,6 +974,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain(formatShortTimestamp("2026-03-17T19:12:29.000Z", "locale"));
     expect(markup).toContain("Worked for 1.0s");
+    expect(markup).not.toContain("data-scroll-anchor-ignore");
     expect(markup).not.toContain(
       `${formatShortTimestamp("2026-03-17T19:12:29.000Z", "locale")} • 1.0s`,
     );
@@ -1204,6 +1206,57 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain(
       '<span class="font-medium text-muted-foreground/72" data-work-entry-action-word="true">Searched</span> 2 files found',
     );
+  });
+
+  it("renders Claude agent task output through the shared markdown renderer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking
+        activeTurnInProgress
+        activeTurnStartedAt="2026-05-09T16:31:20.000Z"
+        timelineEntries={[
+          {
+            id: "entry-claude-agent-task",
+            kind: "work",
+            createdAt: "2026-05-09T16:31:20.000Z",
+            entry: {
+              id: "work-claude-agent-task",
+              createdAt: "2026-05-09T16:31:20.000Z",
+              label: "Agent task",
+              tone: "tool",
+              itemType: "collab_agent_tool_call",
+              toolTitle: "Map file-icon logic in file-changes",
+              detail: [
+                "## Complete File-Icon Rendering Map",
+                "",
+                "```tsx",
+                'const iconName = "react";',
+                "```",
+              ].join("\n"),
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        nowIso="2026-05-09T16:31:25.000Z"
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+      />,
+    );
+
+    expect(markup).toContain("<h2>Complete File-Icon Rendering Map</h2>");
+    expect(markup).toContain("chat-markdown-codeblock");
+    expect(markup).not.toContain("```tsx");
   });
 
   it("keeps the latest inline tool calls visible while the turn is still active", async () => {

@@ -22,6 +22,98 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.1.6",
+    date: "Jun 9",
+    features: [
+      {
+        id: "thread-markers",
+        title: "Transcript markers make long chats easier to navigate",
+        description:
+          "You can now mark important transcript moments, jump back to them, and manage them from the Environment panel without losing your place in busy threads.",
+        details:
+          "Markers now round-trip through orchestration events, projection storage, migrations, shared validation helpers, transcript selection actions, highlighted markdown spans, marker-aware scrolling, and focused browser/unit coverage.",
+      },
+      {
+        id: "link-favicons",
+        title: "Links show real site identity",
+        description:
+          "AI response links, source lists, composer chips, and sent user bubbles now share the same link parsing path with website favicons instead of generic globe icons.",
+        details:
+          "Synara now caches site favicons server-side, serves authenticated favicon image URLs, recognizes bare domains in composer text, and keeps markdown link text aligned with the same medium-weight chip styling used while composing.",
+      },
+      {
+        id: "local-server-environment",
+        title: "Local dev servers are easier to spot",
+        description:
+          "The Environment panel can now show local servers tied to the current project, with clearer browser/terminal identity and controls for tracked project runs.",
+        details:
+          "The server now monitors listening processes with address-family metadata, tracks project-run ownership, syncs local server state over WebSocket/RPC contracts, and adds sidebar/project-run affordances for starting, viewing, and stopping dev servers.",
+      },
+      {
+        id: "transcript-scroll-reliability",
+        title: "Transcript scrolling is calmer",
+        description:
+          "Collapsed work sections no longer drag the transcript tail, marker navigation is more predictable, and thread rendering does less surprising work while sessions update.",
+        details:
+          "The timeline path now separates marker scroll behavior from live-output sticking, avoids retriggering tail scrolls for collapsed work disclosure changes, and has extra coverage around marker selection, rendering, and scrolling.",
+      },
+      {
+        id: "orchestration-and-keybindings",
+        title: "Small orchestration and shortcut fixes landed too",
+        description:
+          "Thread orchestration, terminal identity, recent view switching, retired-model shortcuts, and local-server cleanup picked up focused reliability fixes.",
+        details:
+          "This release tightens provider/runtime event projection, terminal visual identity, local-server process cleanup, recent-view key handling, and retired model picker shortcuts, with new tests for the affected contracts and stores.",
+      },
+    ],
+  },
+  {
+    version: "0.1.5",
+    date: "Jun 8",
+    features: [
+      {
+        id: "desktop-update-packaging",
+        title: "Desktop updates are packaged more reliably",
+        description:
+          "The macOS release path now has stronger artifact smoke checks, zip finalization helpers, and updater download coverage so new builds are easier to trust before they ship.",
+        details:
+          "Release tooling now validates Mac update artifacts, parses boolean environment flags consistently, and tests the resumable update downloader without the older update-feed cache layer. The README and release docs were refreshed around the current Synara desktop flow too.",
+      },
+      {
+        id: "diff-panel-refactor",
+        title: "The diff panel is easier to navigate",
+        description:
+          "Diff review now has a cleaner toolbar, file list, jump menu, and patch viewport so repository and turn changes are easier to scan without losing context.",
+        details:
+          "The large diff panel was split into focused components with explicit repo-vs-turn view logic, shared selectors, searchable file filtering, and tests for the new source-resolution behavior.",
+      },
+      {
+        id: "queued-plan-dispatch",
+        title: "Queued chat turns stay chat turns",
+        description:
+          "Queued follow-ups now preserve their own mode and attachments even when the live composer is sitting in a plan follow-up state.",
+        details:
+          "Queue draining now dispatches the queued turn payload directly, keeps in-progress composer drafts intact, and has browser coverage for plan-mode threads with pending follow-ups and image attachments.",
+      },
+      {
+        id: "composer-stack-polish",
+        title: "Composer panels line up cleanly",
+        description:
+          "Plan activity, queued follow-ups, and live file-change panels now share one frame style above the composer, with consistent width, borders, radius, and dark-mode opacity.",
+        details:
+          "The stacked composer chrome now flows through a shared panel wrapper and rail sizing token, while the file-change strip only appears for active turns that actually contain provider file edits.",
+      },
+      {
+        id: "markdown-and-menu-icons",
+        title: "Markdown and mention menus got sharper",
+        description:
+          "Chat markdown spacing, composer command selection, plugin discovery, file icons, and mention rendering were tightened so selected references look the same before and after sending.",
+        details:
+          "Provider discovery now normalizes aliases and built-in metadata more carefully, command menu grouping is simpler, markdown blocks have better visual rhythm, and sent user bubbles preserve the selected file/plugin icon instead of falling back to generic text.",
+      },
+    ],
+  },
+  {
     version: "0.1.4",
     date: "Jun 7",
     features: [
