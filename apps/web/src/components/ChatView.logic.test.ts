@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendVoiceTranscriptToPrompt,
+  buildComposerMenuSelectionKey,
   filterSidechatTranscriptMessages,
   type LocalDispatchSnapshot,
   deriveComposerSendState,
@@ -25,6 +26,60 @@ import {
   shouldStartActiveTurnLayoutGrace,
   shouldRenderTerminalWorkspace,
 } from "./ChatView.logic";
+
+describe("composer menu selection", () => {
+  const items = [{ id: "skill:check-code" }, { id: "skill:sanity-check" }] as const;
+
+  it("builds a stable key from query and displayed item order", () => {
+    const baseKey = buildComposerMenuSelectionKey({
+      menuOpen: true,
+      picker: null,
+      triggerKind: "slash-command",
+      triggerQuery: "check",
+      items,
+    });
+
+    expect(
+      buildComposerMenuSelectionKey({
+        menuOpen: true,
+        picker: null,
+        triggerKind: "slash-command",
+        triggerQuery: "check",
+        items: [...items],
+      }),
+    ).toBe(baseKey);
+    expect(
+      buildComposerMenuSelectionKey({
+        menuOpen: true,
+        picker: null,
+        triggerKind: "slash-command",
+        triggerQuery: "chec",
+        items,
+      }),
+    ).not.toBe(baseKey);
+    expect(
+      buildComposerMenuSelectionKey({
+        menuOpen: true,
+        picker: null,
+        triggerKind: "slash-command",
+        triggerQuery: "check",
+        items: [...items].reverse(),
+      }),
+    ).not.toBe(baseKey);
+  });
+
+  it("returns null while the menu is closed", () => {
+    expect(
+      buildComposerMenuSelectionKey({
+        menuOpen: false,
+        picker: null,
+        triggerKind: "slash-command",
+        triggerQuery: "check",
+        items,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("voice helpers", () => {
   it("keeps manual titles visible for empty home chats", () => {
@@ -184,12 +239,26 @@ describe("environment panel visibility", () => {
     ).toBe(false);
   });
 
-  it("never renders the panel on the centered empty landing while stale open state resets", () => {
+  it("renders the panel when the user toggles it open on empty landing", () => {
     expect(
       resolveEnvironmentPanelVisible({
         environmentEnabled: true,
         environmentPanelOpen: true,
-        isCenteredEmptyLanding: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the panel hidden when environment controls are disabled or closed", () => {
+    expect(
+      resolveEnvironmentPanelVisible({
+        environmentEnabled: false,
+        environmentPanelOpen: true,
+      }),
+    ).toBe(false);
+    expect(
+      resolveEnvironmentPanelVisible({
+        environmentEnabled: true,
+        environmentPanelOpen: false,
       }),
     ).toBe(false);
   });

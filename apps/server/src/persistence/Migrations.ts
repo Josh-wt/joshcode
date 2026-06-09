@@ -54,7 +54,9 @@ import Migration0038 from "./Migrations/038_ReconcileLegacySidechatSource.ts";
 import Migration0039 from "./Migrations/039_ReconcileLegacyPinnedThreads.ts";
 import Migration0040 from "./Migrations/040_ProjectionThreadsPinnedMessagesNotes.ts";
 import Migration0041 from "./Migrations/041_ProjectionProjectsPinned.ts";
-import Migration0042 from "./Migrations/042_ProjectionThreadWorkspaceContexts.ts";
+import Migration0042 from "./Migrations/042_ProjectionThreadsMarkers.ts";
+import Migration0043 from "./Migrations/043_ProjectionThreadWorkspaceContexts.ts";
+import Migration0044 from "./Migrations/044_ReconcileForkPinnedMessagesNotes.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -108,7 +110,9 @@ export const migrationEntries = [
   [39, "ReconcileLegacyPinnedThreads", Migration0039],
   [40, "ProjectionThreadsPinnedMessagesNotes", Migration0040],
   [41, "ProjectionProjectsPinned", Migration0041],
-  [42, "ProjectionThreadWorkspaceContexts", Migration0042],
+  [42, "ProjectionThreadsMarkers", Migration0042],
+  [43, "ProjectionThreadWorkspaceContexts", Migration0043],
+  [44, "ReconcileForkPinnedMessagesNotes", Migration0044],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

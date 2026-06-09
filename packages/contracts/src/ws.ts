@@ -57,9 +57,13 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import {
+  ProjectDevServerEvent,
+  ProjectDiscoverScriptsInput,
   ProjectListDirectoriesInput,
+  ProjectRunDevServerInput,
   ProjectSearchEntriesInput,
   ProjectSearchLocalEntriesInput,
+  ProjectStopDevServerInput,
   ProjectWriteFileInput,
 } from "./project";
 import { FilesystemBrowseInput } from "./filesystem";
@@ -74,6 +78,7 @@ import {
   ServerGetProviderUsageSnapshotInput,
   ServerProviderStatusesUpdatedPayload,
   ServerSettingsUpdatedPayload,
+  ServerStopLocalServerInput,
   ServerVoiceTranscriptionInput,
 } from "./server";
 import {
@@ -94,10 +99,15 @@ export const WS_METHODS = {
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
+  projectsDiscoverScripts: "projects.discoverScripts",
   projectsListDirectories: "projects.listDirectories",
   projectsSearchEntries: "projects.searchEntries",
   projectsSearchLocalEntries: "projects.searchLocalEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsRunDevServer: "projects.runDevServer",
+  projectsStopDevServer: "projects.stopDevServer",
+  projectsListDevServers: "projects.listDevServers",
+  subscribeProjectDevServerEvents: "projects.subscribeDevServerEvents",
 
   // Filesystem browse methods
   filesystemBrowse: "filesystem.browse",
@@ -147,6 +157,8 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
   serverListWorktrees: "server.listWorktrees",
+  serverListLocalServers: "server.listLocalServers",
+  serverStopLocalServer: "server.stopLocalServer",
   serverGetProviderUsageSnapshot: "server.getProviderUsageSnapshot",
   serverGetDiagnostics: "server.getDiagnostics",
   serverTranscribeVoice: "server.transcribeVoice",
@@ -178,6 +190,7 @@ export const WS_METHODS = {
 export const WS_CHANNELS = {
   gitActionProgress: "git.actionProgress",
   terminalEvent: "terminal.event",
+  projectDevServerEvent: "project.devServerEvent",
   serverWelcome: "server.welcome",
   serverMaintenanceUpdated: "server.maintenanceUpdated",
   serverConfigUpdated: "server.configUpdated",
@@ -216,10 +229,15 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(ORCHESTRATION_WS_METHODS.unsubscribeThread, OrchestrationUnsubscribeThreadInput),
 
   // Project Search
+  tagRequestBody(WS_METHODS.projectsDiscoverScripts, ProjectDiscoverScriptsInput),
   tagRequestBody(WS_METHODS.projectsListDirectories, ProjectListDirectoriesInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchLocalEntries, ProjectSearchLocalEntriesInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
+  tagRequestBody(WS_METHODS.projectsRunDevServer, ProjectRunDevServerInput),
+  tagRequestBody(WS_METHODS.projectsStopDevServer, ProjectStopDevServerInput),
+  tagRequestBody(WS_METHODS.projectsListDevServers, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.subscribeProjectDevServerEvents, Schema.Struct({})),
 
   // Filesystem browse
   tagRequestBody(WS_METHODS.filesystemBrowse, FilesystemBrowseInput),
@@ -269,6 +287,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateProvider, ServerProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverListWorktrees, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverListLocalServers, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverStopLocalServer, ServerStopLocalServerInput),
   tagRequestBody(WS_METHODS.serverGetProviderUsageSnapshot, ServerGetProviderUsageSnapshotInput),
   tagRequestBody(WS_METHODS.serverGetDiagnostics, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverTranscribeVoice, ServerVoiceTranscriptionInput),
@@ -323,6 +343,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverSettingsUpdated]: typeof ServerSettingsUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
+  readonly [WS_CHANNELS.projectDevServerEvent]: typeof ProjectDevServerEvent.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [ORCHESTRATION_WS_CHANNELS.shellEvent]: OrchestrationShellStreamItem;
   readonly [ORCHESTRATION_WS_CHANNELS.threadEvent]: OrchestrationThreadStreamItem;
@@ -364,6 +385,10 @@ export const WsPushGitActionProgress = makeWsPushSchema(
   GitActionProgressEvent,
 );
 export const WsPushTerminalEvent = makeWsPushSchema(WS_CHANNELS.terminalEvent, TerminalEvent);
+export const WsPushProjectDevServerEvent = makeWsPushSchema(
+  WS_CHANNELS.projectDevServerEvent,
+  ProjectDevServerEvent,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -385,6 +410,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.serverSettingsUpdated,
   WS_CHANNELS.terminalEvent,
+  WS_CHANNELS.projectDevServerEvent,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   ORCHESTRATION_WS_CHANNELS.shellEvent,
   ORCHESTRATION_WS_CHANNELS.threadEvent,
@@ -399,6 +425,7 @@ export const WsPush = Schema.Union([
   WsPushServerSettingsUpdated,
   WsPushGitActionProgress,
   WsPushTerminalEvent,
+  WsPushProjectDevServerEvent,
   WsPushOrchestrationDomainEvent,
   WsPushOrchestrationShellEvent,
   WsPushOrchestrationThreadEvent,

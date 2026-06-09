@@ -14,9 +14,13 @@ import type {
   PinnedMessage,
   ResolvedKeybindingsConfig,
   ThreadId,
+  ThreadMarker,
+  ThreadMarkerId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
+import { useAppSettings } from "~/appSettings";
+import { SETTINGS_TARGETS } from "~/settingsNavigation";
 import {
   ENVIRONMENT_PANEL_MOTION_CLASS,
   ENVIRONMENT_PANEL_SURFACE_CLASS_NAME,
@@ -30,6 +34,8 @@ import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/i
 import { cn } from "~/lib/utils";
 
 import { EnvironmentEditorSection } from "./EnvironmentEditorSection";
+import { EnvironmentLocalServersSection } from "./EnvironmentLocalServersSection";
+import { EnvironmentMarkersSection } from "./EnvironmentMarkersSection";
 import { EnvironmentNotesSection } from "./EnvironmentNotesSection";
 import { EnvironmentPinnedSection } from "./EnvironmentPinnedSection";
 import { ENVIRONMENT_PANEL_RECAP_MARKDOWN_CLASS_NAME } from "./environmentPanelStyles";
@@ -38,6 +44,7 @@ import {
   EnvironmentCollapsibleSection,
   EnvironmentPanelTitle,
   EnvironmentRow,
+  EnvironmentSectionDivider,
   EnvironmentSectionLabel,
 } from "./EnvironmentRow";
 
@@ -88,8 +95,12 @@ export interface EnvironmentPanelProps {
   } | null;
   /** Per-thread pinned-message checklist (server-synced). */
   pinnedMessages: readonly PinnedMessage[];
+  /** Per-thread text markers (server-synced). */
+  threadMarkers: readonly ThreadMarker[];
   /** Live text of pinned messages still present in the transcript (for labels/availability). */
   pinnedMessageTextById: ReadonlyMap<MessageId, string>;
+  /** Live text of marked messages still present in the transcript (for labels/availability). */
+  markerMessageTextById: ReadonlyMap<MessageId, string>;
   /** Per-thread freeform scratchpad notes (server-synced). */
   notes: string;
   /** Toggle the Diff panel/route (same handler the header diff toggle used). */
@@ -104,13 +115,19 @@ export interface EnvironmentPanelProps {
   onUnpinMessage: (messageId: MessageId) => void;
   /** Set (`null` clears to auto) a pinned message's label. */
   onRenamePinnedMessage: (messageId: MessageId, label: string | null) => void;
+  /** Scroll the transcript to a text marker. */
+  onJumpToThreadMarker: (marker: ThreadMarker) => void;
+  /** Toggle a marker's done state. */
+  onToggleThreadMarkerDone: (markerId: ThreadMarkerId) => void;
+  /** Remove a text marker. */
+  onRemoveThreadMarker: (markerId: ThreadMarkerId) => void;
+  /** Set (`null` clears to auto) a marker label. */
+  onRenameThreadMarker: (markerId: ThreadMarkerId, label: string | null) => void;
   /** Persist updated notes for the given thread (bound per section instance, not the active thread). */
   onNotesChange: (threadId: ThreadId, notes: string) => Promise<void>;
   /** Dismiss the panel overlay — invoked after actions that open the dock. */
   onClose: () => void;
 }
-
-const PANEL_DIVIDER_CLASS_NAME = "my-1 border-t border-[color:var(--color-border-light)]";
 
 function EnvironmentRecapSection({
   recap,
@@ -159,7 +176,9 @@ export function EnvironmentPanel({
   branchToolbar,
   recap = null,
   pinnedMessages,
+  threadMarkers,
   pinnedMessageTextById,
+  markerMessageTextById,
   notes,
   onToggleDiff,
   onOpenGithubRepository,
@@ -167,10 +186,15 @@ export function EnvironmentPanel({
   onTogglePinnedMessageDone,
   onUnpinMessage,
   onRenamePinnedMessage,
+  onJumpToThreadMarker,
+  onToggleThreadMarkerDone,
+  onRemoveThreadMarker,
+  onRenameThreadMarker,
   onNotesChange,
   onClose,
 }: EnvironmentPanelProps) {
   const navigate = useNavigate();
+  const { settings } = useAppSettings();
   const { additions, deletions, hasChanges } = diffTotals;
 
   // Disable the Changes row only when the diff cannot be opened *and* is not already open
@@ -184,9 +208,14 @@ export function EnvironmentPanel({
       <div className="flex items-center justify-between gap-2 px-2 pb-0.5 pt-0.5">
         <EnvironmentPanelTitle>Environment</EnvironmentPanelTitle>
         <IconButton
-          label="Environment settings"
-          tooltip="Environment settings"
-          onClick={() => void navigate({ to: "/settings" })}
+          label="Panel sections"
+          tooltip="Panel sections"
+          onClick={() =>
+            void navigate({
+              to: "/settings",
+              search: { target: SETTINGS_TARGETS.environmentPanel },
+            })
+          }
         >
           <SettingsIcon className="size-3.5" />
         </IconButton>
@@ -218,10 +247,16 @@ export function EnvironmentPanel({
         <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} variant="panel" />
       ) : null}
 
-      <div className={PANEL_DIVIDER_CLASS_NAME} />
+      <EnvironmentLocalServersSection enabled={open} />
 
-      {githubRepository && onOpenGithubRepository ? (
+      {/*
+        Optional sections below the git block. Each renders its own leading divider only when it
+        actually shows, so toggling any section via the header gear menu never leaves a doubled or
+        dangling rule. Visibility is gated on the per-section AppSettings flags.
+      */}
+      {settings.showEnvironmentRepository && githubRepository && onOpenGithubRepository ? (
         <>
+          <EnvironmentSectionDivider />
           <div className="flex flex-col gap-0.5">
             <EnvironmentSectionLabel>Repository</EnvironmentSectionLabel>
             <EnvironmentRow
@@ -236,26 +271,27 @@ export function EnvironmentPanel({
               }}
             />
           </div>
-          <div className={PANEL_DIVIDER_CLASS_NAME} />
         </>
       ) : null}
 
-      <EnvironmentEditorSection
-        keybindings={keybindings}
-        availableEditors={availableEditors}
-        openInCwd={openInCwd}
-      />
+      {settings.showEnvironmentEditor ? (
+        <EnvironmentEditorSection
+          keybindings={keybindings}
+          availableEditors={availableEditors}
+          openInCwd={openInCwd}
+        />
+      ) : null}
 
-      {showRecap && recap ? (
+      {settings.showEnvironmentRecap && showRecap && recap ? (
         <>
-          <div className={PANEL_DIVIDER_CLASS_NAME} />
+          <EnvironmentSectionDivider />
           <EnvironmentRecapSection recap={recap} markdownCwd={markdownCwd} />
         </>
       ) : null}
 
-      {pinnedMessages.length > 0 ? (
+      {settings.showEnvironmentPinned && pinnedMessages.length > 0 ? (
         <>
-          <div className={PANEL_DIVIDER_CLASS_NAME} />
+          <EnvironmentSectionDivider />
           <EnvironmentPinnedSection
             pins={pinnedMessages}
             messageTextById={pinnedMessageTextById}
@@ -267,9 +303,23 @@ export function EnvironmentPanel({
         </>
       ) : null}
 
-      {activeThreadId ? (
+      {settings.showEnvironmentMarkers && threadMarkers.length > 0 ? (
         <>
-          <div className={PANEL_DIVIDER_CLASS_NAME} />
+          <EnvironmentSectionDivider />
+          <EnvironmentMarkersSection
+            markers={threadMarkers}
+            messageTextById={markerMessageTextById}
+            onJump={onJumpToThreadMarker}
+            onToggleDone={onToggleThreadMarkerDone}
+            onRemove={onRemoveThreadMarker}
+            onRename={onRenameThreadMarker}
+          />
+        </>
+      ) : null}
+
+      {settings.showEnvironmentNotepad && activeThreadId ? (
+        <>
+          <EnvironmentSectionDivider />
           <EnvironmentNotesSection
             key={activeThreadId}
             threadId={activeThreadId}

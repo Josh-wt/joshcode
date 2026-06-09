@@ -23,6 +23,10 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProviderStatus,
   ThreadId,
+  ThreadMarkerId,
+  type ThreadMarker,
+  type ThreadMarkerColor,
+  type ThreadMarkerStyle,
   type TurnId,
   type EditorId,
   type KeybindingCommand,
@@ -47,7 +51,6 @@ import {
   resolveThreadBranchSourceCwd,
   resolveThreadWorkspaceCwd as resolveSharedThreadWorkspaceCwd,
 } from "@t3tools/shared/threadEnvironment";
-import { deriveTerminalCommandIdentity } from "@t3tools/shared/terminalThreads";
 import { deriveAssociatedWorktreeMetadata } from "@t3tools/shared/threadWorkspace";
 import {
   useCallback,
@@ -240,6 +243,7 @@ import {
   projectScriptIdFromCommand,
   setupProjectScript,
 } from "~/projectScripts";
+import { runProjectCommandInTerminal } from "~/projectTerminalRunner";
 import { newCommandId, newMessageId, newProjectId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
@@ -351,6 +355,13 @@ import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachment
 import { TranscriptSelectionActionLayer } from "./chat/TranscriptSelectionActionLayer";
 import { ComposerActiveTaskListCard } from "./chat/ComposerActiveTaskListCard";
 import { useTranscriptAssistantSelectionAction } from "./chat/useTranscriptAssistantSelectionAction";
+import { resolveTranscriptMarkerRange } from "./chat/chatSelectionActions";
+import {
+  dispatchThreadMarkerAdd,
+  dispatchThreadMarkerDoneSet,
+  dispatchThreadMarkerLabelSet,
+  dispatchThreadMarkerRemove,
+} from "../threadMarkers";
 import { getComposerProviderState } from "./chat/composerProviderRegistry";
 import {
   COMPOSER_COMMAND_MENU_FLOATING_WRAPPER_CLASS_NAME,
@@ -446,6 +457,7 @@ const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PINNED_MESSAGES: readonly PinnedMessage[] = [];
+const EMPTY_THREAD_MARKERS: readonly ThreadMarker[] = [];
 const EMPTY_PINNED_TEXT: ReadonlyMap<MessageId, string> = new Map();
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
@@ -606,9 +618,7 @@ function buildQueuedComposerPreviewText(input: {
 }
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
-const SCRIPT_TERMINAL_COLS = 120;
-const SCRIPT_TERMINAL_ROWS = 30;
-const VOICE_RECORDER_ACTION_ARM_DELAY_MS = 500;
+const VOICE_RECORDER_ACTION_ARM_DELAY_MS = 250;
 
 function warnVoiceGuard(event: string, details?: Record<string, unknown>) {
   if (!import.meta.env.DEV) {
@@ -2558,25 +2568,41 @@ export default function ChatView({
   );
   // --- Pinned messages & notes (per-thread, server-synced through sidepanel commands) ---
   const pinnedMessages = activeThread?.pinnedMessages ?? EMPTY_PINNED_MESSAGES;
+  const threadMarkers = activeThread?.threadMarkers ?? EMPTY_THREAD_MARKERS;
   const threadNotes = activeThread?.notes ?? "";
   const pinnedMessageIds = useMemo(
     () => new Set(pinnedMessages.map((pin) => pin.messageId)),
     [pinnedMessages],
   );
-  // Resolve the live text of currently-pinned messages so the panel can derive auto-labels
-  // and flag pins whose source message is no longer in the transcript.
-  const pinnedMessageTextById = useMemo(() => {
-    if (pinnedMessageIds.size === 0) {
-      return EMPTY_PINNED_TEXT;
+  const markerMessageIds = useMemo(
+    () => new Set(threadMarkers.map((marker) => marker.messageId)),
+    [threadMarkers],
+  );
+  // Resolve live text for the Environment panel in one transcript pass.
+  const { markerMessageTextById, pinnedMessageTextById } = useMemo(() => {
+    const needsPinnedText = pinnedMessageIds.size > 0;
+    const needsMarkerText = markerMessageIds.size > 0;
+    if (!needsPinnedText && !needsMarkerText) {
+      return {
+        pinnedMessageTextById: EMPTY_PINNED_TEXT,
+        markerMessageTextById: EMPTY_PINNED_TEXT,
+      };
     }
-    const map = new Map<MessageId, string>();
+    const pinnedTextById = new Map<MessageId, string>();
+    const markerTextById = new Map<MessageId, string>();
     for (const message of timelineMessages) {
-      if (pinnedMessageIds.has(message.id)) {
-        map.set(message.id, message.text);
+      if (needsPinnedText && pinnedMessageIds.has(message.id)) {
+        pinnedTextById.set(message.id, message.text);
+      }
+      if (needsMarkerText && markerMessageIds.has(message.id)) {
+        markerTextById.set(message.id, message.text);
       }
     }
-    return map;
-  }, [pinnedMessageIds, timelineMessages]);
+    return {
+      pinnedMessageTextById: needsPinnedText ? pinnedTextById : EMPTY_PINNED_TEXT,
+      markerMessageTextById: needsMarkerText ? markerTextById : EMPTY_PINNED_TEXT,
+    };
+  }, [markerMessageIds, pinnedMessageIds, timelineMessages]);
   const {
     handleTogglePinMessage,
     handleTogglePinnedMessageDone,
@@ -2587,6 +2613,58 @@ export default function ChatView({
   const handleJumpToPinnedMessage = useCallback((messageId: MessageId) => {
     timelineControllerRef.current?.scrollToMessage(messageId);
   }, []);
+  const handleJumpToThreadMarker = useCallback((marker: ThreadMarker) => {
+    timelineControllerRef.current?.scrollToMarker(marker);
+  }, []);
+  const handleRemoveThreadMarker = useCallback(
+    (markerId: ThreadMarkerId) => {
+      if (!activeThreadId) {
+        return;
+      }
+      void dispatchThreadMarkerRemove(activeThreadId, markerId).catch((error) => {
+        console.error("Failed to remove thread marker", error);
+        toastManager.add({
+          type: "error",
+          title: "Could not remove marker.",
+        });
+      });
+    },
+    [activeThreadId],
+  );
+  const handleToggleThreadMarkerDone = useCallback(
+    (markerId: ThreadMarkerId) => {
+      if (!activeThreadId) {
+        return;
+      }
+      const marker = threadMarkers.find((candidate) => candidate.id === markerId);
+      if (!marker) {
+        return;
+      }
+      void dispatchThreadMarkerDoneSet(activeThreadId, markerId, !marker.done).catch((error) => {
+        console.error("Failed to update thread marker", error);
+        toastManager.add({
+          type: "error",
+          title: "Could not update marker.",
+        });
+      });
+    },
+    [activeThreadId, threadMarkers],
+  );
+  const handleRenameThreadMarker = useCallback(
+    (markerId: ThreadMarkerId, label: string | null) => {
+      if (!activeThreadId) {
+        return;
+      }
+      void dispatchThreadMarkerLabelSet(activeThreadId, markerId, label).catch((error) => {
+        console.error("Failed to rename thread marker", error);
+        toastManager.add({
+          type: "error",
+          title: "Could not rename marker.",
+        });
+      });
+    },
+    [activeThreadId],
+  );
   // Empty top-level threads render the centered landing composer instead of the transcript pane.
   // Home-scoped chats get the global "What should we work on?" copy plus the project picker,
   // while project-scoped drafts reuse the same centered layout with folder-specific copy.
@@ -3743,7 +3821,6 @@ export default function ChatView({
   const environmentPanelVisible = resolveEnvironmentPanelVisible({
     environmentEnabled,
     environmentPanelOpen,
-    isCenteredEmptyLanding,
   });
   const githubRepositoryQuery = useQuery(
     gitGithubRepositoryQueryOptions(gitBranchSourceCwd, environmentPanelVisible),
@@ -3902,36 +3979,25 @@ export default function ChatView({
       }
       setTerminalFocusRequestId((value) => value + 1);
 
-      const runtimeEnv = projectScriptRuntimeEnv({
-        project: {
-          cwd: activeProject.cwd,
-        },
-        worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
-        ...(options?.env ? { extraEnv: options.env } : {}),
-      });
-      const openTerminalInput: Parameters<typeof api.terminal.open>[0] = {
-        threadId: activeThreadId,
-        terminalId: targetTerminalId,
-        cwd: targetCwd,
-        env: runtimeEnv,
-        cols: SCRIPT_TERMINAL_COLS,
-        rows: SCRIPT_TERMINAL_ROWS,
-      };
-
       try {
-        const terminalCommandIdentity = deriveTerminalCommandIdentity(script.command);
-        await api.terminal.open(openTerminalInput);
-        if (terminalCommandIdentity) {
-          storeSetTerminalMetadata(activeThreadId, targetTerminalId, {
-            cliKind: terminalCommandIdentity.cliKind,
-            label: terminalCommandIdentity.title,
-          });
-        }
-        await api.terminal.write({
+        const { metadata } = await runProjectCommandInTerminal({
+          api,
           threadId: activeThreadId,
           terminalId: targetTerminalId,
-          data: `${script.command}\r`,
+          project: {
+            cwd: activeProject.cwd,
+          },
+          cwd: targetCwd,
+          command: script.command,
+          worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
+          ...(options?.env ? { env: options.env } : {}),
         });
+        if (metadata) {
+          storeSetTerminalMetadata(activeThreadId, targetTerminalId, {
+            cliKind: metadata.cliKind,
+            label: metadata.label,
+          });
+        }
       } catch (error) {
         setThreadError(
           activeThreadId,
@@ -4410,6 +4476,7 @@ export default function ChatView({
   const {
     pendingTranscriptSelectionAction,
     commitTranscriptAssistantSelection,
+    dismissTranscriptSelectionAction,
     onMessagesClickCapture,
     onMessagesMouseUp,
     onMessagesPointerCancel,
@@ -4441,6 +4508,85 @@ export default function ChatView({
     onMessagesTouchStartBase,
     onMessagesWheelBase,
   });
+  const createMarkerFromPendingSelection = useCallback(
+    (style: ThreadMarkerStyle, color: ThreadMarkerColor) => {
+      const pendingSelection = pendingTranscriptSelectionAction;
+      if (!pendingSelection || !activeThreadId) {
+        return;
+      }
+      const messageId = MessageId.makeUnsafe(pendingSelection.selection.assistantMessageId);
+      const message = timelineMessages.find((candidate) => candidate.id === messageId);
+      if (!message) {
+        toastManager.add({
+          type: "warning",
+          title: "Could not find the selected message.",
+        });
+        return;
+      }
+      const range = resolveTranscriptMarkerRange({
+        messageText: message.text,
+        selectedText: pendingSelection.selection.text,
+      });
+      if (!range) {
+        toastManager.add({
+          type: "warning",
+          title: "Select a unique phrase to mark it.",
+          description: "Try including a few more words so Synara can find the exact place.",
+        });
+        return;
+      }
+      dismissTranscriptSelectionAction();
+      window.getSelection()?.removeAllRanges();
+      const sameStyleOverlappingMarkers = threadMarkers.filter(
+        (marker) =>
+          marker.messageId === messageId &&
+          marker.style === style &&
+          marker.startOffset < range.endOffset &&
+          range.startOffset < marker.endOffset,
+      );
+      if (sameStyleOverlappingMarkers.length > 0) {
+        for (const marker of sameStyleOverlappingMarkers) {
+          void dispatchThreadMarkerRemove(activeThreadId, marker.id).catch((error) => {
+            console.error("Failed to remove thread marker", error);
+            toastManager.add({
+              type: "error",
+              title: "Could not remove marker.",
+            });
+          });
+        }
+        return;
+      }
+      void dispatchThreadMarkerAdd({
+        threadId: activeThreadId,
+        markerId: ThreadMarkerId.makeUnsafe(crypto.randomUUID()),
+        messageId,
+        startOffset: range.startOffset,
+        endOffset: range.endOffset,
+        selectedText: message.text.slice(range.startOffset, range.endOffset),
+        style,
+        color,
+      }).catch((error) => {
+        console.error("Failed to create thread marker", error);
+        toastManager.add({
+          type: "error",
+          title: "Could not create marker.",
+        });
+      });
+    },
+    [
+      activeThreadId,
+      dismissTranscriptSelectionAction,
+      pendingTranscriptSelectionAction,
+      threadMarkers,
+      timelineMessages,
+    ],
+  );
+  const createHighlightFromPendingSelection = useCallback(() => {
+    createMarkerFromPendingSelection("highlight", "yellow");
+  }, [createMarkerFromPendingSelection]);
+  const createUnderlineFromPendingSelection = useCallback(() => {
+    createMarkerFromPendingSelection("underline", "blue");
+  }, [createMarkerFromPendingSelection]);
 
   useLayoutEffect(() => {
     if (isInactiveSplitPane) return;
@@ -8005,7 +8151,9 @@ export default function ChatView({
     branchToolbar: branchToolbarProps,
     recap: threadRecap,
     pinnedMessages,
+    threadMarkers,
     pinnedMessageTextById,
+    markerMessageTextById,
     notes: threadNotes,
     onToggleDiff,
     onOpenGithubRepository: openBrowserUrl,
@@ -8013,6 +8161,10 @@ export default function ChatView({
     onTogglePinnedMessageDone: handleTogglePinnedMessageDone,
     onUnpinMessage: handleUnpinMessage,
     onRenamePinnedMessage: handleRenamePinnedMessage,
+    onJumpToThreadMarker: handleJumpToThreadMarker,
+    onToggleThreadMarkerDone: handleToggleThreadMarkerDone,
+    onRemoveThreadMarker: handleRemoveThreadMarker,
+    onRenameThreadMarker: handleRenameThreadMarker,
     onNotesChange: handleNotesChange,
     onClose: () => setEnvironmentPanelOpen(false),
   };
@@ -8697,6 +8849,7 @@ export default function ChatView({
                     timelineControllerRef={timelineControllerRef}
                     pinnedMessageIds={pinnedMessageIds}
                     onTogglePinMessage={handleTogglePinMessage}
+                    threadMarkers={threadMarkers}
                     timelineEntries={timelineEntries}
                     turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                     onOpenTurnDiff={onOpenTurnDiff}
@@ -8882,6 +9035,8 @@ export default function ChatView({
       {isInactiveSplitPane ? null : (
         <TranscriptSelectionActionLayer
           action={pendingTranscriptSelectionAction}
+          onHighlight={createHighlightFromPendingSelection}
+          onUnderline={createUnderlineFromPendingSelection}
           onAddToChat={commitTranscriptAssistantSelection}
         />
       )}
