@@ -22,6 +22,7 @@ import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 
 import { APP_DISPLAY_NAME } from "../branding";
+import { DesktopWindowControls } from "../components/DesktopWindowControls";
 import { FloatingSubscriptionsPanel } from "../components/sidebar/FloatingSubscriptionsPanel";
 import { SETTINGS_TARGETS } from "../settingsNavigation";
 import ShortcutsDialog from "../components/ShortcutsDialog";
@@ -77,6 +78,7 @@ import { hasLiveThreadsWithMissingProjects } from "../lib/desktopProjectRecovery
 import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
 import { useProviderAuthRefreshOnFocus } from "../hooks/useProviderAuthRefreshOnFocus";
 import { resolveSplitViewThreadIds, selectSplitView, useSplitViewStore } from "../splitViewStore";
+import { providerModelDiscoveryInvalidationFingerprint } from "../lib/providerDiscoveryInvalidation";
 import { providerDiscoveryQueryKeys } from "../lib/providerDiscoveryReactQuery";
 import {
   getGitInvalidationThreadIdForEvent,
@@ -87,6 +89,9 @@ import {
 
 const SHELL_SNAPSHOT_BOOTSTRAP_FALLBACK_DELAY_MS = 1_500;
 const THREAD_DETAIL_CATCHUP_INTERVAL_MS = 1_500;
+const PENDING_SHELL_EVENT_BUFFER_LIMIT = 1_024;
+const PENDING_THREAD_EVENT_BUFFER_LIMIT = 512;
+const IMMEDIATE_ASSISTANT_FLUSH_ID_LIMIT = 512;
 const seenProviderUpdateNotificationKeys = new Set<string>();
 
 type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
@@ -150,32 +155,55 @@ function RootRouteView() {
   useSyncDesktopTopBarTrafficLightGutterZoom();
   useTheme();
 
+  // Single mount point for the Windows caption buttons. The cluster is pinned to the
+  // window's top-right corner (frameless Windows shell) and renders nothing on macOS,
+  // Linux, or the web build, so it is safe to mount unconditionally here — including on
+  // the pre-backend "connecting" screen, so the window stays closable before the
+  // renderer connects. Top bars reserve space for it via
+  // useDesktopTopBarWindowControlsGutterClassName().
+  //
+  // MUST render LAST: Electron builds the OS drag region by walking elements with
+  // `-webkit-app-region` in DOM order, unioning `drag` rects and subtracting `no-drag`
+  // rects in sequence. The route headers are full-width `drag-region`s that extend under
+  // this cluster, so the cluster's `no-drag` rect has to be subtracted AFTER those drag
+  // rects are added — otherwise the OS reclaims the corner as title-bar caption and
+  // swallows the click as a window drag (the buttons render but do nothing). Rendering
+  // it last in document order guarantees that subtraction wins. (z above dialogs/toasts
+  // so it also stays clickable while a modal is open.)
+  const desktopWindowControls = <DesktopWindowControls className="fixed top-0 right-0 z-[250]" />;
+
   if (!readNativeApi()) {
     return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
-        <div className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted-foreground">
-            Connecting to {APP_DISPLAY_NAME} server...
-          </p>
+      <>
+        <div className="flex h-screen flex-col bg-background text-foreground">
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-sm text-muted-foreground">
+              Connecting to {APP_DISPLAY_NAME} server...
+            </p>
+          </div>
         </div>
-      </div>
+        {desktopWindowControls}
+      </>
     );
   }
 
   return (
-    <ToastProvider position="top-center">
-      <AnchoredToastProvider>
-        <GitProgressToastPreviewDev />
-        <EventRouter />
-        <GlobalShortcutsDialog />
-        <GlobalWhatsNewSurface />
-        <FloatingSubscriptionsPanel />
-        <TaskCompletionNotifications />
-        <ProviderUpdateNotifications />
-        <DesktopProjectBootstrap />
-        <Outlet />
-      </AnchoredToastProvider>
-    </ToastProvider>
+    <>
+      <ToastProvider position="top-center">
+        <AnchoredToastProvider>
+          <GitProgressToastPreviewDev />
+          <EventRouter />
+          <GlobalShortcutsDialog />
+          <GlobalWhatsNewSurface />
+          <FloatingSubscriptionsPanel />
+          <TaskCompletionNotifications />
+          <ProviderUpdateNotifications />
+          <DesktopProjectBootstrap />
+          <Outlet />
+        </AnchoredToastProvider>
+      </ToastProvider>
+      {desktopWindowControls}
+    </>
   );
 }
 
@@ -638,6 +666,29 @@ function coalesceOrchestrationUiEvents(
   return coalesced;
 }
 
+function appendBounded<T>(items: T[], item: T, limit: number): void {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  if (items.length >= normalizedLimit) {
+    items.splice(0, items.length - normalizedLimit + 1);
+  }
+  items.push(item);
+}
+
+function addBoundedSetValue<T>(set: Set<T>, value: T, limit: number): void {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  if (set.has(value)) {
+    set.delete(value);
+  }
+  while (set.size >= normalizedLimit) {
+    const oldestValue = set.values().next().value as T | undefined;
+    if (oldestValue === undefined) {
+      break;
+    }
+    set.delete(oldestValue);
+  }
+  set.add(value);
+}
+
 function shouldFlushDomainEventImmediately(
   event: OrchestrationEvent,
   immediatelyFlushedAssistantMessageIds: Set<string>,
@@ -655,7 +706,11 @@ function shouldFlushDomainEventImmediately(
     return false;
   }
 
-  immediatelyFlushedAssistantMessageIds.add(event.payload.messageId);
+  addBoundedSetValue(
+    immediatelyFlushedAssistantMessageIds,
+    event.payload.messageId,
+    IMMEDIATE_ASSISTANT_FLUSH_ID_LIMIT,
+  );
   return true;
 }
 
@@ -765,6 +820,7 @@ function EventRouter() {
     let pendingGitInvalidationThreadIds = new Set<ThreadId>();
     let pendingDomainEvents: OrchestrationEvent[] = [];
     const immediatelyFlushedAssistantMessageIds = new Set<string>();
+    let providerDiscoveryInvalidationFingerprint: string | null = null;
     let shellSnapshotSequence = -1;
     let pendingShellEvents: OrchestrationShellStreamEvent[] = [];
     const subscribedThreadIds = new Set<ThreadId>();
@@ -1050,7 +1106,7 @@ function EventRouter() {
       }
 
       if (shellSnapshotSequence < 0) {
-        pendingShellEvents.push(item);
+        appendBounded(pendingShellEvents, item, PENDING_SHELL_EVENT_BUFFER_LIMIT);
         return;
       }
       if (item.sequence <= shellSnapshotSequence) {
@@ -1087,7 +1143,7 @@ function EventRouter() {
       const latestThreadSequence = threadSnapshotSequenceById.get(threadId);
       if (latestThreadSequence === undefined) {
         const pendingThreadEvents = pendingThreadEventsById.get(threadId) ?? [];
-        pendingThreadEvents.push(item.event);
+        appendBounded(pendingThreadEvents, item.event, PENDING_THREAD_EVENT_BUFFER_LIMIT);
         pendingThreadEventsById.set(threadId, pendingThreadEvents);
         if (subscribedThreadIds.has(threadId)) {
           void requestThreadSnapshot(threadId);
@@ -1226,7 +1282,20 @@ function EventRouter() {
       });
     });
     const unsubProviderStatusesUpdated = onServerProviderStatusesUpdated((payload) => {
+      const nextProviderDiscoveryFingerprint = providerModelDiscoveryInvalidationFingerprint(
+        payload.providers,
+      );
       const currentConfig = queryClient.getQueryData<ServerConfig>(serverQueryKeys.config());
+      const previousProviderDiscoveryFingerprint =
+        providerDiscoveryInvalidationFingerprint ??
+        (currentConfig
+          ? providerModelDiscoveryInvalidationFingerprint(currentConfig.providers)
+          : null);
+      const shouldInvalidateProviderDiscovery =
+        previousProviderDiscoveryFingerprint !== null &&
+        previousProviderDiscoveryFingerprint !== nextProviderDiscoveryFingerprint;
+      providerDiscoveryInvalidationFingerprint = nextProviderDiscoveryFingerprint;
+
       if (!currentConfig) {
         void queryClient.fetchQuery(serverConfigQueryOptions()).catch(() => undefined);
         return;
@@ -1235,22 +1304,25 @@ function EventRouter() {
         ...currentConfig,
         providers: payload.providers,
       });
-      // OpenCode-compatible model availability depends on which underlying providers are connected.
-      void queryClient.invalidateQueries({
-        queryKey: ["provider-discovery", "models", "kilo"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["provider-discovery", "models", "opencode"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["provider-discovery", "models", "cursor"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: providerDiscoveryQueryKeys.agents("kilo"),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: providerDiscoveryQueryKeys.agents("opencode"),
-      });
+      if (shouldInvalidateProviderDiscovery) {
+        // Model and agent discovery can depend on auth, availability, and installed versions,
+        // but not on every provider-status timestamp replay.
+        void queryClient.invalidateQueries({
+          queryKey: ["provider-discovery", "models", "kilo"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["provider-discovery", "models", "opencode"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["provider-discovery", "models", "cursor"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: providerDiscoveryQueryKeys.agents("kilo"),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: providerDiscoveryQueryKeys.agents("opencode"),
+        });
+      }
     });
     const unsubServerSettingsUpdated = onServerSettingsUpdated((payload) => {
       queryClient.setQueryData(serverQueryKeys.settings(), payload.settings);

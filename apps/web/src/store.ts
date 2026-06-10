@@ -547,9 +547,14 @@ function providerReferenceArraysEqual(
   left:
     | ReadonlyArray<Pick<NonNullable<ChatMessage["mentions"]>[number], "name" | "path">>
     | undefined,
-  right: ReadonlyArray<Pick<NonNullable<ChatMessage["mentions"]>[number], "name" | "path">>,
+  right:
+    | ReadonlyArray<Pick<NonNullable<ChatMessage["mentions"]>[number], "name" | "path">>
+    | undefined,
 ): boolean {
-  if (!left || left.length !== right.length) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
     return false;
   }
   for (let index = 0; index < left.length; index += 1) {
@@ -845,8 +850,15 @@ function normalizeChatMessage(
   previous: ChatMessage | undefined,
 ): ChatMessage {
   const attachments = normalizeChatAttachments(incoming.attachments, previous?.attachments);
-  const skills = incoming.skills ?? [];
-  const mentions = incoming.mentions ?? [];
+  // Partial live updates omit skills/mentions; keep the previous arrays so optimistic
+  // rows don't lose plugin metadata before thread.message-sent arrives. If message edit
+  // can remove @mentions, treat explicit incoming.skills/mentions === [] as a clear.
+  const skills =
+    incoming.skills && incoming.skills.length > 0 ? incoming.skills : (previous?.skills ?? []);
+  const mentions =
+    incoming.mentions && incoming.mentions.length > 0
+      ? incoming.mentions
+      : (previous?.mentions ?? []);
   const previousSkills = previous?.skills ?? [];
   const previousMentions = previous?.mentions ?? [];
   const completedAt = incoming.streaming ? undefined : incoming.updatedAt;
@@ -989,7 +1001,19 @@ function mergeReadModelMessagesWithLiveHotPath(
         (incomingCompletedAt === undefined || previousMessage.completedAt > incomingCompletedAt));
 
     if (!shouldPreferLiveMessage) {
-      mergedById.set(incomingMessage.id, incomingMessage);
+      mergedById.set(incomingMessage.id, {
+        ...incomingMessage,
+        ...(!incomingMessage.mentions || incomingMessage.mentions.length === 0
+          ? previousMessage.mentions && previousMessage.mentions.length > 0
+            ? { mentions: previousMessage.mentions }
+            : {}
+          : {}),
+        ...(!incomingMessage.skills || incomingMessage.skills.length === 0
+          ? previousMessage.skills && previousMessage.skills.length > 0
+            ? { skills: previousMessage.skills }
+            : {}
+          : {}),
+      });
       continue;
     }
 
@@ -2915,6 +2939,14 @@ function mergeStreamingMessage(
     nextText = `${existingMessage.text}${incomingMessage.text}`;
   }
   const nextAttachments = incomingMessage.attachments ?? existingMessage.attachments;
+  const nextSkills =
+    incomingMessage.skills && incomingMessage.skills.length > 0
+      ? incomingMessage.skills
+      : existingMessage.skills;
+  const nextMentions =
+    incomingMessage.mentions && incomingMessage.mentions.length > 0
+      ? incomingMessage.mentions
+      : existingMessage.mentions;
   const nextCompletedAt = incomingMessage.streaming
     ? existingMessage.completedAt
     : (incomingMessage.completedAt ?? existingMessage.completedAt);
@@ -2930,6 +2962,8 @@ function mergeStreamingMessage(
     existingMessage.text === nextText &&
     existingMessage.streaming === incomingMessage.streaming &&
     existingMessage.attachments === nextAttachments &&
+    providerReferenceArraysEqual(existingMessage.skills, nextSkills) &&
+    providerReferenceArraysEqual(existingMessage.mentions, nextMentions) &&
     existingMessage.completedAt === nextCompletedAt &&
     existingMessage.turnId === nextTurnId &&
     existingMessage.dispatchMode === nextDispatchMode &&
@@ -2943,6 +2977,8 @@ function mergeStreamingMessage(
     text: nextText,
     streaming: incomingMessage.streaming,
     ...(nextAttachments ? { attachments: nextAttachments } : {}),
+    ...(nextSkills && nextSkills.length > 0 ? { skills: [...nextSkills] } : {}),
+    ...(nextMentions && nextMentions.length > 0 ? { mentions: [...nextMentions] } : {}),
     ...(nextTurnId !== undefined ? { turnId: nextTurnId } : {}),
     ...(nextDispatchMode !== undefined ? { dispatchMode: nextDispatchMode } : {}),
     ...(nextSource !== undefined ? { source: nextSource } : {}),
@@ -2960,6 +2996,8 @@ function applyThreadMessageSentEvent(thread: Thread, event: ThreadMessageSentEve
       dispatchMode: payload.dispatchMode,
       turnId: payload.turnId,
       attachments: payload.attachments ?? [],
+      ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
+      ...(payload.mentions !== undefined ? { mentions: payload.mentions } : {}),
       streaming: payload.streaming,
       source: payload.source,
       createdAt: payload.createdAt,

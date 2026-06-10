@@ -1,4 +1,8 @@
-import type { ProviderKind, ServerStopLocalServerInput } from "@t3tools/contracts";
+import type {
+  ProviderKind,
+  ServerListProviderUsageInput,
+  ServerStopLocalServerInput,
+} from "@t3tools/contracts";
 import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { ensureNativeApi } from "~/nativeApi";
 
@@ -16,6 +20,7 @@ export const serverQueryKeys = {
   localServers: () => ["server", "localServers"] as const,
   providerUsage: (provider: ProviderKind | null | undefined, homePath?: string | null) =>
     ["server", "providerUsage", provider ?? null, homePath ?? null] as const,
+  allProviderUsage: () => ["server", "allProviderUsage"] as const,
 };
 
 export const serverMutationKeys = {
@@ -138,5 +143,30 @@ export function serverProviderUsageSnapshotQueryOptions(input: {
         ...(input.homePath ? { homePath: input.homePath } : {}),
       });
     },
+  });
+}
+
+export async function fetchAllProviderUsage(input: ServerListProviderUsageInput = {}) {
+  const api = ensureNativeApi();
+  return api.server.listProviderUsage(input);
+}
+
+// Live remaining-usage for every supported provider at once, powering Settings and active usage UI.
+export function serverAllProviderUsageQueryOptions(
+  input:
+    | boolean
+    | {
+        enabled?: boolean;
+      } = true,
+) {
+  const enabled = typeof input === "boolean" ? input : (input.enabled ?? true);
+  return queryOptions({
+    queryKey: serverQueryKeys.allProviderUsage(),
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+    queryFn: async () => fetchAllProviderUsage(),
   });
 }

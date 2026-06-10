@@ -123,6 +123,10 @@
     "./openRouterVoiceTranscription": {
       "types": "./src/openRouterVoiceTranscription.ts",
       "import": "./src/openRouterVoiceTranscription.ts"
+    },
+    "./providerUsage": {
+      "types": "./src/providerUsage.ts",
+      "import": "./src/providerUsage.ts"
     }
   },
   "scripts": {

@@ -222,6 +222,7 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   describeAddProjectError,
+  buildSettingsBackAvailableThreadIds,
   buildProjectThreadTree,
   derivePinnedProjectIdsForSidebar,
   deriveSidebarProjectData,
@@ -2126,7 +2127,10 @@ export default function Sidebar() {
       sortThreadsForSidebar(sidebarThreads, appSettings.sidebarThreadSortOrder)[0] ?? null;
     return resolveSettingsBackTarget({
       lastThreadRoute,
-      availableThreadIds: new Set(Object.keys(sidebarThreadSummaryById)),
+      availableThreadIds: buildSettingsBackAvailableThreadIds({
+        sidebarThreadSummaryById,
+        draftThreadsByThreadId,
+      }),
       availableSplitViewIds: new Set(
         Object.keys(splitViewsById).filter((splitViewId) => splitViewsById[splitViewId]),
       ),
@@ -2135,6 +2139,7 @@ export default function Sidebar() {
   }, [
     appSettings.sidebarThreadSortOrder,
     lastThreadRoute,
+    draftThreadsByThreadId,
     sidebarThreadSummaryById,
     sidebarThreads,
     splitViewsById,
@@ -5658,6 +5663,15 @@ export default function Sidebar() {
         setSearchPaletteOpen((prev) => !prev || searchPaletteMode !== "import");
         return;
       }
+      if (command === "settings.usage") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({
+          to: "/settings",
+          search: { section: "usage" },
+        });
+        return;
+      }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex !== null) {
         event.preventDefault();
@@ -5882,6 +5896,7 @@ export default function Sidebar() {
   const addProjectShortcutLabel =
     shortcutLabelForCommand(keybindings, "sidebar.addProject") ??
     (isMacPlatform(navigator.platform) ? "⇧⌘O" : "Ctrl+Shift+O");
+  const usageSettingsShortcutLabel = shortcutLabelForCommand(keybindings, "settings.usage");
   const searchPaletteProjects = useMemo<SidebarSearchProject[]>(
     () =>
       projects.map((project) => ({
@@ -5941,12 +5956,20 @@ export default function Sidebar() {
         description: "Open app settings.",
         keywords: ["preferences", "config"],
       },
+      {
+        id: "usage-settings",
+        label: "Usage settings",
+        description: "Open provider usage and remaining credits.",
+        keywords: ["usage", "limits", "credits", "quota", "providers"],
+        shortcutLabel: usageSettingsShortcutLabel,
+      },
     ],
     [
       addProjectShortcutLabel,
       importThreadShortcutLabel,
       newChatShortcutLabel,
       newThreadShortcutLabel,
+      usageSettingsShortcutLabel,
     ],
   );
 
@@ -6995,6 +7018,12 @@ export default function Sidebar() {
           onOpenSettings={() => {
             void navigate({ to: "/settings" });
           }}
+          onOpenUsageSettings={() => {
+            void navigate({
+              to: "/settings",
+              search: { section: "usage" },
+            });
+          }}
           onOpenProject={handleOpenProjectFromSearch}
           onImportThread={handleImportThread}
           onOpenThread={(threadId) => {
@@ -7020,6 +7049,7 @@ function SidebarSearchPaletteController(props: {
   homeDir: string | null;
   initialBrowseQuery: string | null;
   onOpenSettings: () => void;
+  onOpenUsageSettings: () => void;
   onOpenProject: (projectId: string) => void;
   onImportThread: (provider: ImportProviderKind, externalId: string) => Promise<void>;
   onOpenThread: (threadId: string) => void;
@@ -7078,6 +7108,7 @@ function SidebarSearchPaletteController(props: {
       homeDir={props.homeDir}
       initialBrowseQuery={props.initialBrowseQuery}
       onOpenSettings={props.onOpenSettings}
+      onOpenUsageSettings={props.onOpenUsageSettings}
       onOpenProject={props.onOpenProject}
       importProviders={importProviders}
       onImportThread={props.onImportThread}

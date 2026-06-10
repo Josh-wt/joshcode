@@ -680,6 +680,35 @@ export interface CodexAppServerManagerEvents {
   event: [event: ProviderEvent];
 }
 
+const CODEX_DISCOVERY_CACHE_MAX_ENTRIES = 128;
+
+function getRecentCacheEntry<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  const value = cache.get(key);
+  if (value === undefined) {
+    return undefined;
+  }
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setRecentCacheEntry<K, V>(
+  cache: Map<K, V>,
+  key: K,
+  value: V,
+  maxEntries = CODEX_DISCOVERY_CACHE_MAX_ENTRIES,
+): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value as K | undefined;
+    if (oldestKey === undefined) {
+      return;
+    }
+    cache.delete(oldestKey);
+  }
+}
+
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
   private readonly discoverySessions = new Map<string, CodexSessionContext>();
@@ -1683,7 +1712,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       threadId: input.threadId?.trim() || null,
     });
     if (!input.forceReload) {
-      const cached = this.skillsCache.get(cacheKey);
+      const cached = getRecentCacheEntry(this.skillsCache, cacheKey);
       if (cached) {
         return {
           ...cached,
@@ -1714,7 +1743,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       source: "codex-app-server",
       cached: false,
     };
-    this.skillsCache.set(cacheKey, result);
+    setRecentCacheEntry(this.skillsCache, cacheKey, result);
     return result;
   }
 
@@ -1726,7 +1755,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       forceRemoteSync: input.forceRemoteSync === true,
     });
     if (!input.forceReload) {
-      const cached = this.pluginsCache.get(cacheKey);
+      const cached = getRecentCacheEntry(this.pluginsCache, cacheKey);
       if (cached) {
         return {
           ...cached,
@@ -1745,7 +1774,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       source: "codex-app-server",
       cached: false,
     };
-    this.pluginsCache.set(cacheKey, result);
+    setRecentCacheEntry(this.pluginsCache, cacheKey, result);
     return result;
   }
 
@@ -1756,7 +1785,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       marketplacePath,
       pluginName,
     });
-    const cached = this.pluginDetailCache.get(cacheKey);
+    const cached = getRecentCacheEntry(this.pluginDetailCache, cacheKey);
     if (cached) {
       return {
         ...cached,
@@ -1774,13 +1803,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       source: "codex-app-server",
       cached: false,
     };
-    this.pluginDetailCache.set(cacheKey, result);
+    setRecentCacheEntry(this.pluginDetailCache, cacheKey, result);
     return result;
   }
 
   async listModels(threadId?: string): Promise<ProviderListModelsResult> {
     const cacheKey = threadId?.trim() || "__default__";
-    const cached = this.modelCache.get(cacheKey);
+    const cached = getRecentCacheEntry(this.modelCache, cacheKey);
     if (cached) {
       return {
         ...cached,
@@ -1800,7 +1829,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       source: "codex-app-server",
       cached: false,
     };
-    this.modelCache.set(cacheKey, result);
+    setRecentCacheEntry(this.modelCache, cacheKey, result);
     return result;
   }
 

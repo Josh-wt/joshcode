@@ -168,6 +168,7 @@ import {
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   hasLiveTurnTailWork,
+  isProviderFileEditWorkLogEntry,
   isLatestTurnSettled,
   WORK_LOG_PRESENTATION_VERSION,
   type ActiveTaskListState,
@@ -228,6 +229,7 @@ import {
   XIcon,
 } from "~/lib/icons";
 import { ComposerQueuedHeader } from "./chat/ComposerQueuedHeader";
+import { ComposerLiveChangesHeader } from "./chat/ComposerLiveChangesHeader";
 import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -328,7 +330,10 @@ import {
 } from "./chat/chatHeaderControls";
 import { SidebarHeaderNavigationControls } from "./SidebarHeaderNavigationControls";
 import { SidebarHeaderTrigger } from "./ui/sidebar";
-import { useDesktopTopBarTrafficLightGutterClassName } from "~/hooks/useDesktopTopBarGutter";
+import {
+  useDesktopTopBarTrafficLightGutterClassName,
+  useDesktopTopBarWindowControlsGutterClassName,
+} from "~/hooks/useDesktopTopBarGutter";
 import { useThreadRecap } from "~/hooks/useThreadRecap";
 import { useRepoDiffTotals } from "~/hooks/useRepoDiffTotals";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -338,8 +343,9 @@ import { buildTurnDiffSummaryByAssistantMessageId } from "./chat/MessagesTimelin
 import { deriveAgentActivityTimelineState } from "./chat/agentActivity.logic";
 import { ComposerSlashStatusDialog } from "./chat/ComposerSlashStatusDialog";
 import { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { AVAILABLE_PROVIDER_OPTIONS } from "./chat/ProviderModelPicker";
+import { AVAILABLE_PROVIDER_OPTIONS, ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ComposerModelEffortPicker } from "./chat/ComposerModelEffortPicker";
+import { TraitsPicker } from "./chat/TraitsPicker";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import {
   ComposerLocalDirectoryMenu,
@@ -354,6 +360,7 @@ import { ComposerVoiceRecorderBar } from "./chat/ComposerVoiceRecorderBar";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
 import { TranscriptSelectionActionLayer } from "./chat/TranscriptSelectionActionLayer";
 import { ComposerActiveTaskListCard } from "./chat/ComposerActiveTaskListCard";
+import { ComposerColumnFrame } from "./chat/ComposerColumnFrame";
 import { useTranscriptAssistantSelectionAction } from "./chat/useTranscriptAssistantSelectionAction";
 import { resolveTranscriptMarkerRange } from "./chat/chatSelectionActions";
 import {
@@ -430,7 +437,7 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerSlashCommands } from "../hooks/useComposerSlashCommands";
 import { useFeatureFlags } from "../featureFlags";
-import { collapseCursorModelVariants } from "../cursorModelVariants";
+import { mergeCursorModelVariantsWithBaseControls } from "../cursorModelVariants";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
   canCreateThreadHandoff,
@@ -829,6 +836,8 @@ export default function ChatView({
   const setStoreThreadWorkspace = useStore((store) => store.setThreadWorkspace);
   const { settings } = useAppSettings();
   const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
+  const desktopTopBarWindowControlsGutterClassName =
+    useDesktopTopBarWindowControlsGutterClassName();
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -1243,6 +1252,11 @@ export default function ChatView({
     activeThread?.session ?? null,
   );
   const latestTurnSettled = latestTurnSettledByProvider && !hasLiveTurnTail;
+  // `latestTurnSettled` is also false when there is NO started turn (a brand-new
+  // chat), because `isLatestTurnSettled` treats a non-existent turn as unsettled.
+  // Gate "live turn" UI on an actually-started turn so the working-tree diff strip
+  // doesn't leak onto a fresh chat just because the repo happens to be dirty.
+  const latestTurnLive = Boolean(activeLatestTurn?.startedAt) && !latestTurnSettled;
   const activeProjectId = activeThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = useStore(
     useMemo(() => createProjectSelector(activeProjectId), [activeProjectId]),
@@ -1543,7 +1557,7 @@ export default function ChatView({
   const diffEnvironmentPending = diffEnvironmentState.pending;
   const diffDisabledReason = diffEnvironmentState.disabledReason;
   const repoDiffBadgeRefreshIntervalMs =
-    isFocusedPane && !latestTurnSettled && !diffEnvironmentPending && !resolvedDiffOpen
+    isFocusedPane && latestTurnLive && !diffEnvironmentPending && !resolvedDiffOpen
       ? GIT_WORKING_TREE_DIFF_LIVE_REFETCH_INTERVAL_MS
       : false;
   const activeThreadAssociatedWorktree = useMemo(
@@ -1802,13 +1816,14 @@ export default function ChatView({
     () =>
       showExpandedCursorModelVariants
         ? (cursorDynamicModelsQuery.data?.models ?? [])
-        : collapseCursorModelVariants(cursorDynamicModelsQuery.data?.models ?? []),
+        : mergeCursorModelVariantsWithBaseControls(cursorDynamicModelsQuery.data?.models ?? []),
     [cursorDynamicModelsQuery.data?.models, showExpandedCursorModelVariants],
   );
   const cursorModelDiscoveryEnabled =
     selectedProvider === "cursor" || lockedProvider === "cursor" || isModelPickerOpen;
   const hasResolvedCursorModelDiscovery =
-    cursorDynamicModelsQuery.data?.source === "cursor.cli" &&
+    (cursorDynamicModelsQuery.data?.source === "cursor.cli" ||
+      cursorDynamicModelsQuery.data?.source === "cursor.acp") &&
     (cursorDynamicModelsQuery.data.models.length ?? 0) > 0;
   const cursorModelDiscoveryPending =
     cursorModelDiscoveryEnabled &&
@@ -2098,6 +2113,10 @@ export default function ChatView({
   const rawWorkLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities, WORK_LOG_PRESENTATION_VERSION],
+  );
+  const activeTurnHasFileChangeWork = useMemo(
+    () => rawWorkLogEntries.some(isProviderFileEditWorkLogEntry),
+    [rawWorkLogEntries],
   );
   const hasWorkLogSubagents = useMemo(
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
@@ -3248,8 +3267,6 @@ export default function ChatView({
     () => shortcutLabelForCommand(keybindings, "chat.split"),
     [keybindings],
   );
-  // The combined picker uses the same configurable keybinding command that the
-  // keydown handler resolves, keeping synced keybindings and tooltip labels aligned.
   const modelPickerShortcutLabel = useMemo(
     () =>
       shortcutLabelForCommand(keybindings, "modelPicker.toggle") ??
@@ -3261,6 +3278,10 @@ export default function ChatView({
         altKey: false,
         modKey: true,
       }),
+    [keybindings],
+  );
+  const traitsPickerShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "traitsPicker.toggle"),
     [keybindings],
   );
   const onToggleDiff = useCallback(() => {
@@ -3283,6 +3304,27 @@ export default function ChatView({
       },
     });
   }, [diffEnvironmentPending, diffOpen, navigate, onToggleDiffPanel, threadId]);
+  // Open-only diff action (no toggle): used by affordances like the live-changes
+  // "Review" strip where a second click should never close an already-open panel.
+  const onOpenDiff = useCallback(() => {
+    if (diffEnvironmentPending || resolvedDiffOpen) {
+      return;
+    }
+    if (onToggleDiffPanel) {
+      onToggleDiffPanel();
+      return;
+    }
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      replace: true,
+      search: (previous) => ({
+        ...stripDiffSearchParams(previous),
+        panel: "diff",
+        diff: "1",
+      }),
+    });
+  }, [diffEnvironmentPending, navigate, onToggleDiffPanel, resolvedDiffOpen, threadId]);
   const onToggleBrowser = useCallback(() => {
     if (onToggleBrowserPanel) {
       onToggleBrowserPanel();
@@ -7140,11 +7182,11 @@ export default function ChatView({
       }),
     [runtimeUsageContextWindow, composerTraitSelection.contextWindow, selectedProvider],
   );
+  const useSplitComposerPickerControls = isLocalDraftThread && !hasThreadStarted;
+  const composerModelPickerWidthClassName = isComposerFooterCompact ? "w-32" : "w-36 sm:w-44";
+  const composerOptionsPickerWidthClassName = isComposerFooterCompact ? "w-28" : "w-32";
   const composerModelEffortPickerWidthClassName = isComposerFooterCompact ? "w-40" : "w-44 sm:w-52";
   const isComposerModelEffortPickerOpen = isModelPickerOpen || isTraitsPickerOpen;
-  // Both shortcuts (Mod+Shift+M and Mod+Shift+E) now drop into the same combined
-  // surface; clear both mirrors on close so the existing keyboard handler stays
-  // in sync without needing to know about the new picker.
   const handleComposerModelEffortPickerOpenChange = useCallback(
     (open: boolean) => {
       if (open) {
@@ -7156,12 +7198,58 @@ export default function ChatView({
     },
     [handleModelPickerOpenChange],
   );
-  const composerModelEffortPickerControl = showComposerModelBootstrapSkeleton ? (
-    selectedProviderRuntimeModelDiscoveryPending ? (
+  const composerPickerControls = showComposerModelBootstrapSkeleton ? (
+    useSplitComposerPickerControls ? (
+      <>
+        {selectedProviderRuntimeModelDiscoveryPending ? (
+          <ComposerModelLoadingControl widthClassName={composerModelPickerWidthClassName} />
+        ) : (
+          <ComposerControlSkeleton widthClassName={composerModelPickerWidthClassName} />
+        )}
+        <ComposerControlSkeleton widthClassName={composerOptionsPickerWidthClassName} />
+      </>
+    ) : selectedProviderRuntimeModelDiscoveryPending ? (
       <ComposerModelLoadingControl widthClassName={composerModelEffortPickerWidthClassName} />
     ) : (
       <ComposerControlSkeleton widthClassName={composerModelEffortPickerWidthClassName} />
     )
+  ) : useSplitComposerPickerControls ? (
+    <>
+      <ProviderModelPicker
+        compact={isComposerFooterCompact}
+        provider={selectedProvider}
+        model={selectedModelForPickerWithCustomFallback}
+        lockedProvider={lockedProvider}
+        providers={providerStatuses}
+        modelOptionsByProvider={modelOptionsByProvider}
+        loadingModelProviders={{
+          cursor: cursorModelDiscoveryPending,
+          kilo: kiloModelDiscoveryPending,
+        }}
+        hiddenProviders={settings.hiddenProviders}
+        providerOrder={settings.providerOrder}
+        onProviderModelChange={onProviderModelSelect}
+        onSelectionCommitted={scheduleComposerFocus}
+        open={isModelPickerOpen}
+        onOpenChange={handleModelPickerOpenChange}
+        shortcutLabel={modelPickerShortcutLabel}
+      />
+      <TraitsPicker
+        provider={selectedProvider}
+        threadId={threadId}
+        model={selectedModelForPickerWithCustomFallback}
+        runtimeModel={selectedRuntimeModel}
+        runtimeModels={runtimeModelsByProvider[selectedProvider]}
+        runtimeAgents={dynamicAgents}
+        modelOptions={selectedProviderModelOptions}
+        prompt={prompt}
+        onPromptChange={setPromptFromTraits}
+        open={isTraitsPickerOpen}
+        onOpenChange={handleTraitsPickerOpenChange}
+        onSelectionCommitted={scheduleComposerFocus}
+        shortcutLabel={traitsPickerShortcutLabel}
+      />
+    </>
   ) : (
     <ComposerModelEffortPicker
       compact={isComposerFooterCompact}
@@ -7975,6 +8063,7 @@ export default function ChatView({
               CHAT_SURFACE_HEADER_ROW_CLASS_NAME,
               "drag-region px-5",
               desktopTopBarTrafficLightGutterClassName,
+              desktopTopBarWindowControlsGutterClassName,
             )}
           >
             <SidebarHeaderNavigationControls />
@@ -8144,6 +8233,7 @@ export default function ChatView({
     keybindings,
     availableEditors,
     activeThreadId: activeThread.id,
+    activeProvider: activeThread.session?.provider ?? activeThread.modelSelection.provider,
     showGitActions,
     diffOpen: resolvedDiffOpen,
     diffDisabledReason,
@@ -8182,10 +8272,14 @@ export default function ChatView({
       }
     : null;
 
+  const showComposerLiveChangesHeader =
+    latestTurnLive && activeTurnHasFileChangeWork && repoDiffTotals.fileCount > 0;
+  const showComposerActiveTaskListCard = Boolean(activeTaskList && !planSidebarOpen);
+
   // Composer layout keeps the task list and footer actions in one render path so
   // follow-up prompts and normal chat mode stay visually in sync.
-  const renderActiveTaskListCard = () =>
-    activeTaskList && !planSidebarOpen ? (
+  const renderActiveTaskListCard = (attachedToPrevious: boolean) =>
+    activeTaskList && showComposerActiveTaskListCard ? (
       <ComposerActiveTaskListCard
         activeTaskList={activeTaskList}
         cardRef={activeTaskListCardRef}
@@ -8193,13 +8287,13 @@ export default function ChatView({
         compact={activeTaskListCompact}
         onCompactChange={setActiveTaskListCompact}
         onOpenSidebar={() => setPlanSidebarOpen(true)}
+        attachedToPrevious={attachedToPrevious}
       />
     ) : null;
 
   const composerSection =
     secondaryChromeReady && shouldRenderChatPaneContent ? (
       <>
-        {renderActiveTaskListCard()}
         <form
           ref={composerFormRef}
           onSubmit={onSend}
@@ -8207,12 +8301,22 @@ export default function ChatView({
           data-chat-composer-form="true"
           data-chat-pane-scope={paneScopeId}
         >
-          <div className={COMPOSER_COLUMN_FRAME_CLASS_NAME}>
+          <ComposerColumnFrame>
+            {showComposerLiveChangesHeader ? (
+              <ComposerLiveChangesHeader
+                fileCount={repoDiffTotals.fileCount}
+                additions={repoDiffTotals.additions}
+                deletions={repoDiffTotals.deletions}
+                onReview={onOpenDiff}
+              />
+            ) : null}
+            {renderActiveTaskListCard(showComposerLiveChangesHeader)}
             <ComposerQueuedHeader
               queuedTurns={queuedComposerTurns}
               onSteer={onSteerQueuedComposerTurn}
               onRemove={removeQueuedComposerTurn}
               onEdit={onEditQueuedComposerTurn}
+              attachedToPrevious={showComposerLiveChangesHeader || showComposerActiveTaskListCard}
             />
             <div
               className={cn(
@@ -8465,9 +8569,7 @@ export default function ChatView({
                             : {})}
                         />
                       ) : null}
-                      {!isVoiceRecording && !isVoiceTranscribing
-                        ? composerModelEffortPickerControl
-                        : null}
+                      {!isVoiceRecording && !isVoiceTranscribing ? composerPickerControls : null}
                       {showVoiceNotesControl && (isVoiceRecording || isVoiceTranscribing) ? (
                         <ComposerVoiceRecorderBar
                           disabled={isComposerApprovalState || isConnecting || isSendBusy}
@@ -8649,7 +8751,7 @@ export default function ChatView({
                 )}
               </div>
             </div>
-          </div>
+          </ComposerColumnFrame>
         </form>
         {composerBelowControls}
       </>
@@ -8682,6 +8784,7 @@ export default function ChatView({
           CHAT_SURFACE_HEADER_HEIGHT_CLASS,
           isElectron && "drag-region",
           desktopTopBarTrafficLightGutterClassName,
+          desktopTopBarWindowControlsGutterClassName,
         )}
       >
         <ChatHeader
