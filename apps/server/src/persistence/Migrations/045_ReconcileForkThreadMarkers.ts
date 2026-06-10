@@ -1,0 +1,20 @@
+/**
+ * Repairs fork DBs whose migration tracker recorded ID 42 as
+ * ProjectionThreadWorkspaceContexts before upstream thread markers landed at
+ * the same ID. Queries in v0.1.6 require thread_markers_json.
+ */
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
+import { columnExists } from "./schemaHelpers.ts";
+
+export default Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  if (!(yield* columnExists(sql, "projection_threads", "thread_markers_json"))) {
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN thread_markers_json TEXT
+    `;
+  }
+});

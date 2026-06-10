@@ -83,15 +83,13 @@ export function buildComposerMenuSelectionKey(input: {
   return `${sourceKey}\u001f${input.items.map((item) => item.id).join("\u001e")}`;
 }
 
-// Default-open policy for the Environment panel; render-time visibility is resolved separately.
-export function resolveDefaultEnvironmentPanelOpen(input: {
+// Environment panel stays closed until the user opens it via the header icon.
+export function resolveDefaultEnvironmentPanelOpen(_input: {
   environmentEnabled: boolean;
   isCenteredEmptyLanding: boolean;
   isTerminalPrimarySurface: boolean;
 }): boolean {
-  return (
-    input.environmentEnabled && !input.isCenteredEmptyLanding && !input.isTerminalPrimarySurface
-  );
+  return false;
 }
 
 export function resolveEnvironmentPanelVisible(input: {

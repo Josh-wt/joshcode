@@ -212,17 +212,14 @@ describe("voice helpers", () => {
 });
 
 describe("environment panel visibility", () => {
-  it("opens normal chat threads by default", () => {
+  it("keeps the environment panel closed by default", () => {
     expect(
       resolveDefaultEnvironmentPanelOpen({
         environmentEnabled: true,
         isCenteredEmptyLanding: false,
         isTerminalPrimarySurface: false,
       }),
-    ).toBe(true);
-  });
-
-  it("keeps empty landing and terminal-primary surfaces closed by default", () => {
+    ).toBe(false);
     expect(
       resolveDefaultEnvironmentPanelOpen({
         environmentEnabled: true,

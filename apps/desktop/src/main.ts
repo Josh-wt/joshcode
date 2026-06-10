@@ -1916,6 +1916,8 @@ function startBackend(): void {
     stdio: captureBackendLogs ? ["ignore", "pipe", "pipe"] : "inherit",
   });
   const listeningDetector = new ServerListeningDetector();
+  // Backend can exit before readiness; avoid unhandled rejections on the detector promise.
+  listeningDetector.promise.catch(() => {});
   backendListeningDetector = listeningDetector;
   backendProcess = child;
   let backendSessionClosed = false;

@@ -3855,9 +3855,7 @@ export default function ChatView({
   });
   const [environmentPanelOpen, setEnvironmentPanelOpen] = useState(() => environmentDefaultOpen);
   useEffect(() => {
-    // Terminal threads keep the Environment panel closed by default so the full
-    // workspace stays untouched until the user explicitly toggles the overlay.
-    // Each normal chat thread starts open; empty/disposable views stay hidden.
+    // Reset to closed when switching threads; the user opens the panel via the header icon.
     setEnvironmentPanelOpen(environmentDefaultOpen);
   }, [environmentDefaultOpen, threadId]);
   const environmentPanelVisible = resolveEnvironmentPanelVisible({
