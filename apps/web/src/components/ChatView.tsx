@@ -108,6 +108,7 @@ import { stripDiffSearchParams } from "../diffRouteSearch";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
 import { isHomeChatContainerProject } from "../lib/chatProjects";
 import { resolveFirstSendTarget } from "../lib/chatFirstSend";
+import { deriveComposerSuggestions, type ComposerSuggestion } from "../lib/composerSuggestions";
 import {
   maybeResolveBrowserPromptAttachment,
   type BrowserPromptAttachmentResolution,
@@ -371,6 +372,8 @@ import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachment
 import { TranscriptSelectionActionLayer } from "./chat/TranscriptSelectionActionLayer";
 import { ComposerActiveTaskListCard } from "./chat/ComposerActiveTaskListCard";
 import { ComposerColumnFrame } from "./chat/ComposerColumnFrame";
+import { ComposerSuggestions } from "./chat/ComposerSuggestions";
+import { DisclosureRegion } from "./ui/DisclosureRegion";
 import { useTranscriptAssistantSelectionAction } from "./chat/useTranscriptAssistantSelectionAction";
 import { resolveTranscriptMarkerRange } from "./chat/chatSelectionActions";
 import {
@@ -480,6 +483,11 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
+const EMPTY_COMPOSER_SUGGESTIONS: ComposerSuggestion[] = [];
+const EMPTY_SUGGESTION_SOURCE_THREADS: Thread[] = [];
+const selectEmptyComposerSuggestionThreads: ReturnType<typeof createAllThreadsSelector> = () =>
+  EMPTY_SUGGESTION_SOURCE_THREADS;
+
 function revokeBlobPreviewUrlsAfterPaint(previewUrls: readonly string[]): void {
   if (previewUrls.length === 0 || typeof window === "undefined") {
     return;
@@ -9191,6 +9199,18 @@ export default function ChatView({
                         ) : null}
                       </div>
                     </div>
+                  ) : null}
+                  {showComposerSuggestions ? (
+                    <DisclosureRegion
+                      open={composerSuggestionsOpen}
+                      className={COMPOSER_COLUMN_FRAME_CLASS_NAME}
+                      contentClassName="pt-5"
+                    >
+                      <ComposerSuggestions
+                        suggestions={composerSuggestions}
+                        onSelectSuggestion={onSelectComposerSuggestion}
+                      />
+                    </DisclosureRegion>
                   ) : null}
                 </div>
               </div>
