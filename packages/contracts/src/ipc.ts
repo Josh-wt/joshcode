@@ -58,6 +58,8 @@ import type {
   ProjectListDevServersResult,
   ProjectListDirectoriesInput,
   ProjectListDirectoriesResult,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ProjectRunDevServerInput,
   ProjectRunDevServerResult,
   ProjectSearchEntriesInput,
@@ -136,6 +138,8 @@ import type {
   ProviderListPluginsResult,
   ProviderListSkillsInput,
   ProviderListSkillsResult,
+  ProviderSkillsCatalogInput,
+  ProviderSkillsCatalogResult,
   ProviderReadPluginInput,
   ProviderReadPluginResult,
 } from "./providerDiscovery";
@@ -378,6 +382,7 @@ export interface NativeApi {
     searchLocalEntries: (
       input: ProjectSearchLocalEntriesInput,
     ) => Promise<ProjectSearchLocalEntriesResult>;
+    readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
     runDevServer: (input: ProjectRunDevServerInput) => Promise<ProjectRunDevServerResult>;
     stopDevServer: (input: ProjectStopDevServerInput) => Promise<ProjectStopDevServerResult>;
@@ -476,6 +481,7 @@ export interface NativeApi {
     compactThread: (input: ProviderCompactThreadInput) => Promise<void>;
     listCommands: (input: ProviderListCommandsInput) => Promise<ProviderListCommandsResult>;
     listSkills: (input: ProviderListSkillsInput) => Promise<ProviderListSkillsResult>;
+    listSkillsCatalog: (input: ProviderSkillsCatalogInput) => Promise<ProviderSkillsCatalogResult>;
     listPlugins: (input: ProviderListPluginsInput) => Promise<ProviderListPluginsResult>;
     readPlugin: (input: ProviderReadPluginInput) => Promise<ProviderReadPluginResult>;
     listModels: (input: ProviderListModelsInput) => Promise<ProviderListModelsResult>;

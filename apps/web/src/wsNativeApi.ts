@@ -478,6 +478,7 @@ export function createWsNativeApi(): NativeApi {
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
       searchLocalEntries: (input) =>
         transport.request(WS_METHODS.projectsSearchLocalEntries, input),
+      readFile: (input) => transport.request(WS_METHODS.projectsReadFile, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
       runDevServer: (input) => transport.request(WS_METHODS.projectsRunDevServer, input),
       stopDevServer: (input) => transport.request(WS_METHODS.projectsStopDevServer, input),
@@ -633,6 +634,7 @@ export function createWsNativeApi(): NativeApi {
       compactThread: (input) => transport.request(WS_METHODS.providerCompactThread, input),
       listCommands: (input) => transport.request(WS_METHODS.providerListCommands, input),
       listSkills: (input) => transport.request(WS_METHODS.providerListSkills, input),
+      listSkillsCatalog: (input) => transport.request(WS_METHODS.providerListSkillsCatalog, input),
       listPlugins: (input) => transport.request(WS_METHODS.providerListPlugins, input),
       readPlugin: (input) => transport.request(WS_METHODS.providerReadPlugin, input),
       listModels: (input) => transport.request(WS_METHODS.providerListModels, input),

@@ -58,7 +58,7 @@ import {
   onServerWelcome,
 } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
-import { projectQueryKeys } from "../lib/projectReactQuery";
+import { invalidateProjectFileQueriesForCwds, projectQueryKeys } from "../lib/projectReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
 import { useProjectRunStore } from "../projectRunStore";
 import { dockTerminalThreadId } from "../lib/dockTerminalScope";
@@ -77,11 +77,21 @@ import { invalidateGitQueries, invalidateGitQueriesForCwds } from "../lib/gitRea
 import { hasLiveThreadsWithMissingProjects } from "../lib/desktopProjectRecovery";
 import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
 import { useProviderAuthRefreshOnFocus } from "../hooks/useProviderAuthRefreshOnFocus";
+import { useProviderStatusRefresh } from "../hooks/useProviderStatusRefresh";
 import { resolveSplitViewThreadIds, selectSplitView, useSplitViewStore } from "../splitViewStore";
 import { providerModelDiscoveryInvalidationFingerprint } from "../lib/providerDiscoveryInvalidation";
 import { providerDiscoveryQueryKeys } from "../lib/providerDiscoveryReactQuery";
+import { useAppSettings } from "../appSettings";
+import {
+  getVisibleProviderUpdateStatuses,
+  isProviderUpdateActive,
+  providerUpdateNotificationKey,
+  PROVIDER_UPDATE_INITIAL_REFRESH_DELAY_MS,
+  PROVIDER_UPDATE_REFRESH_INTERVAL_MS,
+} from "../providerUpdates";
 import {
   getGitInvalidationThreadIdForEvent,
+  getProjectFileInvalidationThreadIdForEvent,
   resolveGitInvalidationCwdForThreadId,
   shouldInvalidateGitQueriesForEvent,
   shouldInvalidateProviderQueriesForEvent,
@@ -98,22 +108,6 @@ type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
 type ActiveProviderUpdateToast =
   | { readonly kind: "prompt"; readonly key: string; readonly toastId: ProviderUpdateToastId }
   | { readonly kind: "update"; readonly key: string; readonly toastId: ProviderUpdateToastId };
-
-function isProviderUpdateActive(provider: ServerProviderStatus): boolean {
-  return provider.updateState?.status === "queued" || provider.updateState?.status === "running";
-}
-
-function providerUpdateNotificationKey(
-  providers: ReadonlyArray<ServerProviderStatus>,
-): string | null {
-  const parts = providers
-    .map((provider) =>
-      [provider.provider, provider.versionAdvisory?.latestVersion ?? "unknown"].join(":"),
-    )
-    .toSorted();
-
-  return parts.length > 0 ? parts.join("|") : null;
-}
 
 function shellThreadHasStarted(thread: OrchestrationShellSnapshot["threads"][number]): boolean {
   return thread.latestTurn !== null || thread.session !== null;
@@ -217,21 +211,28 @@ function GitProgressToastPreviewDev() {
 function ProviderUpdateNotifications() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { settings } = useAppSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
   const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
   const isUpdatingAllRef = useRef(false);
   const progressToastDismissedRef = useRef(false);
+  // Provider latest-version checks are slow/network-backed, so keep this much
+  // coarser than auth focus refreshes while still avoiding manual-only refreshes.
+  useProviderStatusRefresh({
+    initialDelayMs: PROVIDER_UPDATE_INITIAL_REFRESH_DELAY_MS,
+    intervalMs: PROVIDER_UPDATE_REFRESH_INTERVAL_MS,
+  });
   const outdatedProviders = useMemo(
     () =>
-      (serverConfigQuery.data?.providers ?? []).filter(
-        (provider) =>
-          provider.versionAdvisory?.status === "behind_latest" &&
-          provider.versionAdvisory.latestVersion !== null &&
-          provider.versionAdvisory.canUpdate === true &&
-          provider.versionAdvisory.updateCommand !== null,
-      ),
-    [serverConfigQuery.data?.providers],
+      getVisibleProviderUpdateStatuses({
+        providers: serverConfigQuery.data?.providers ?? [],
+        hiddenProviders: settings.hiddenProviders,
+        serverSettings: serverSettingsQuery.data ?? null,
+        oneClickOnly: true,
+      }),
+    [serverConfigQuery.data?.providers, serverSettingsQuery.data, settings.hiddenProviders],
   );
   const oneClickProviders = useMemo(
     () => outdatedProviders.filter((provider) => !isProviderUpdateActive(provider)),
@@ -818,6 +819,7 @@ function EventRouter() {
     let needsProviderInvalidation = false;
     let needsBroadGitInvalidation = false;
     let pendingGitInvalidationThreadIds = new Set<ThreadId>();
+    let pendingProjectFileInvalidationThreadIds = new Set<ThreadId>();
     let pendingDomainEvents: OrchestrationEvent[] = [];
     const immediatelyFlushedAssistantMessageIds = new Set<string>();
     let providerDiscoveryInvalidationFingerprint: string | null = null;
@@ -995,10 +997,28 @@ function EventRouter() {
       }
       if (needsProviderInvalidation) {
         needsProviderInvalidation = false;
+        pendingProjectFileInvalidationThreadIds = new Set();
         void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
         // Invalidate workspace entry queries so the @-mention file picker
         // reflects files created, deleted, or restored during this turn.
         void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
+      } else if (pendingProjectFileInvalidationThreadIds.size > 0) {
+        // Mid-turn file-change activities: refresh the editor file tree and
+        // open file preview for just the affected workspaces.
+        const currentState = useStore.getState();
+        const fileChangeCwds = new Set<string>();
+        for (const threadId of pendingProjectFileInvalidationThreadIds) {
+          const cwd = resolveGitInvalidationCwdForThreadId(currentState, threadId);
+          if (cwd) {
+            fileChangeCwds.add(cwd);
+          }
+        }
+        pendingProjectFileInvalidationThreadIds = new Set();
+        if (fileChangeCwds.size > 0) {
+          void invalidateProjectFileQueriesForCwds(queryClient, fileChangeCwds);
+        } else {
+          void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
+        }
       }
       if (needsBroadGitInvalidation) {
         needsBroadGitInvalidation = false;
@@ -1029,6 +1049,10 @@ function EventRouter() {
       pendingDomainEvents.push(event);
       if (shouldInvalidateProviderQueriesForEvent(event)) {
         needsProviderInvalidation = true;
+      }
+      const projectFileThreadId = getProjectFileInvalidationThreadIdForEvent(event);
+      if (projectFileThreadId) {
+        pendingProjectFileInvalidationThreadIds.add(projectFileThreadId);
       }
       if (shouldInvalidateGitQueriesForEvent(event)) {
         const threadId = getGitInvalidationThreadIdForEvent(event);

@@ -124,6 +124,10 @@
       "types": "./src/openRouterVoiceTranscription.ts",
       "import": "./src/openRouterVoiceTranscription.ts"
     },
+    "./editorIcons": {
+      "types": "./src/editorIcons.ts",
+      "import": "./src/editorIcons.ts"
+    },
     "./providerUsage": {
       "types": "./src/providerUsage.ts",
       "import": "./src/providerUsage.ts"

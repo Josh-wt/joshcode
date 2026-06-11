@@ -40,6 +40,7 @@ import {
   IconFolder,
   IconFolderOpen,
   IconEdit,
+  IconHistory,
   IconInfoCircle,
   IconLayoutDistributeHorizontal,
   IconListCheck,
@@ -167,6 +168,7 @@ export const McpIcon: LucideIcon = (props) => (
 );
 export const PluginIcon: LucideIcon = centralIconWrapper("puzzle");
 export const HammerIcon = adaptIcon(IconTool);
+export const HistoryIcon = adaptIcon(IconHistory);
 export const InfoIcon = adaptIcon(IconInfoCircle);
 export const ListChecksIcon = adaptIcon(IconListCheck);
 export const ListTodoIcon = adaptIcon(IconListDetails);
@@ -178,6 +180,7 @@ export const LockOpenIcon = adaptIcon(IconLockOpen);
 export const Maximize2 = adaptIcon(IconMaximize);
 export const Minimize2 = adaptIcon(IconMinimize);
 export const MessageCircleIcon = adaptIcon(IconMessageCircle);
+export const ChatBubbleIcon: LucideIcon = centralIconWrapper("bubble-text");
 export const MicIcon: LucideIcon = centralIconWrapper("microphone");
 export const SidebarHiddenLeftWideIcon = centralIconWrapper("sidebar-hidden-left-wide");
 export const SidebarHiddenRightWideIcon = centralIconWrapper("sidebar-hidden-right-wide");
@@ -185,6 +188,7 @@ export const PanelLeftCloseIcon = SidebarHiddenLeftWideIcon;
 export const PanelLeftIcon = centralIconWrapper("sidebar-simple-left-wide");
 export const PanelRightCloseIcon = SidebarHiddenRightWideIcon;
 export const WindowIcon: LucideIcon = centralIconWrapper("window");
+export const LayoutSidebarIcon: LucideIcon = centralIconWrapper("layout-sidebar");
 export const PencilIcon: LucideIcon = centralIconWrapper("pencil");
 export const PinIcon: LucideIcon = centralIconWrapper("pin");
 export const PlayIcon = adaptIcon(IconPlayerPlay);

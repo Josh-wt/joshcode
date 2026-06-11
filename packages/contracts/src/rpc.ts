@@ -69,6 +69,8 @@ import {
   ProviderListPluginsResult,
   ProviderListSkillsInput,
   ProviderListSkillsResult,
+  ProviderSkillsCatalogInput,
+  ProviderSkillsCatalogResult,
   ProviderReadPluginInput,
   ProviderReadPluginResult,
 } from "./providerDiscovery";
@@ -79,6 +81,8 @@ import {
   ProjectListDevServersResult,
   ProjectListDirectoriesInput,
   ProjectListDirectoriesResult,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ProjectRunDevServerInput,
   ProjectRunDevServerResult,
   ProjectSearchEntriesInput,
@@ -258,6 +262,12 @@ export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntr
 export const WsProjectsSearchLocalEntriesRpc = Rpc.make(WS_METHODS.projectsSearchLocalEntries, {
   payload: ProjectSearchLocalEntriesInput,
   success: ProjectSearchLocalEntriesResult,
+  error: WsRpcError,
+});
+
+export const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
+  payload: ProjectReadFileInput,
+  success: ProjectReadFileResult,
   error: WsRpcError,
 });
 
@@ -646,6 +656,12 @@ export const WsProviderListSkillsRpc = Rpc.make(WS_METHODS.providerListSkills, {
   error: WsRpcError,
 });
 
+export const WsProviderListSkillsCatalogRpc = Rpc.make(WS_METHODS.providerListSkillsCatalog, {
+  payload: ProviderSkillsCatalogInput,
+  success: ProviderSkillsCatalogResult,
+  error: WsRpcError,
+});
+
 export const WsProviderListPluginsRpc = Rpc.make(WS_METHODS.providerListPlugins, {
   payload: ProviderListPluginsInput,
   success: ProviderListPluginsResult,
@@ -688,6 +704,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListDirectoriesRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsSearchLocalEntriesRpc,
+  WsProjectsReadFileRpc,
   WsProjectsWriteFileRpc,
   WsProjectsRunDevServerRpc,
   WsProjectsStopDevServerRpc,
@@ -749,6 +766,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderCompactThreadRpc,
   WsProviderListCommandsRpc,
   WsProviderListSkillsRpc,
+  WsProviderListSkillsCatalogRpc,
   WsProviderListPluginsRpc,
   WsProviderReadPluginRpc,
   WsProviderListModelsRpc,

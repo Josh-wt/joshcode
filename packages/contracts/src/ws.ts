@@ -60,6 +60,7 @@ import {
   ProjectDevServerEvent,
   ProjectDiscoverScriptsInput,
   ProjectListDirectoriesInput,
+  ProjectReadFileInput,
   ProjectRunDevServerInput,
   ProjectSearchEntriesInput,
   ProjectSearchLocalEntriesInput,
@@ -90,6 +91,7 @@ import {
   ProviderListAgentsInput,
   ProviderReadPluginInput,
   ProviderListSkillsInput,
+  ProviderSkillsCatalogInput,
 } from "./providerDiscovery";
 import { ProviderCompactThreadInput } from "./provider";
 
@@ -104,6 +106,7 @@ export const WS_METHODS = {
   projectsListDirectories: "projects.listDirectories",
   projectsSearchEntries: "projects.searchEntries",
   projectsSearchLocalEntries: "projects.searchLocalEntries",
+  projectsReadFile: "projects.readFile",
   projectsWriteFile: "projects.writeFile",
   projectsRunDevServer: "projects.runDevServer",
   projectsStopDevServer: "projects.stopDevServer",
@@ -181,6 +184,7 @@ export const WS_METHODS = {
   providerCompactThread: "provider.compactThread",
   providerListCommands: "provider.listCommands",
   providerListSkills: "provider.listSkills",
+  providerListSkillsCatalog: "provider.listSkillsCatalog",
   providerListPlugins: "provider.listPlugins",
   providerReadPlugin: "provider.readPlugin",
   providerListModels: "provider.listModels",
@@ -235,6 +239,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsListDirectories, ProjectListDirectoriesInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchLocalEntries, ProjectSearchLocalEntriesInput),
+  tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.projectsRunDevServer, ProjectRunDevServerInput),
   tagRequestBody(WS_METHODS.projectsStopDevServer, ProjectStopDevServerInput),
@@ -303,6 +308,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerCompactThread, ProviderCompactThreadInput),
   tagRequestBody(WS_METHODS.providerListCommands, ProviderListCommandsInput),
   tagRequestBody(WS_METHODS.providerListSkills, ProviderListSkillsInput),
+  tagRequestBody(WS_METHODS.providerListSkillsCatalog, ProviderSkillsCatalogInput),
   tagRequestBody(WS_METHODS.providerListPlugins, ProviderListPluginsInput),
   tagRequestBody(WS_METHODS.providerReadPlugin, ProviderReadPluginInput),
   tagRequestBody(WS_METHODS.providerListModels, ProviderListModelsInput),
