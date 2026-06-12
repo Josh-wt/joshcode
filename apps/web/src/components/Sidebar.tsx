@@ -4646,7 +4646,7 @@ export default function Sidebar() {
   }
 
   function bindSidebarThreadDragHandlers(thread: SidebarThreadSummary) {
-    const canDrag = canSidebarThreadBeDragged(thread) && renamingThreadId !== thread.id;
+    const canDrag = canSidebarThreadBeDragged(thread) && renameDialogThreadId !== thread.id;
     return {
       draggable: canDrag,
       onDragStart: (event: ReactDragEvent<HTMLElement>) => {
