@@ -3801,24 +3801,6 @@ export default function Sidebar() {
     }
     return byProjectId;
   }, [appSettings.sidebarThreadSortOrder, projects, sidebarThreadsByProjectId, threadOrderRevision]);
-  const resolveSplitPreview = useCallback(
-    (threadId: ThreadId | null): SidebarSplitPreview => {
-      const thread = threadId ? (sidebarThreadSummaryById[threadId] ?? null) : null;
-      const draftProvider =
-        threadId && composerDraftsByThreadId[threadId]?.activeProvider
-          ? composerDraftsByThreadId[threadId].activeProvider
-          : null;
-      return {
-        threadId,
-        title: resolveSplitPreviewTitle({
-          thread,
-          draftPrompt: threadId ? (composerDraftsByThreadId[threadId]?.prompt ?? null) : null,
-        }),
-        provider: thread?.modelSelection.provider ?? draftProvider ?? "codex",
-      };
-    },
-    [composerDraftsByThreadId, sidebarThreadSummaryById],
-  );
 
   const handleProjectTitlePointerDownCapture = useCallback(() => {
     suppressProjectClickAfterDragRef.current = false;
