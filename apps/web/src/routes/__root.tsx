@@ -69,7 +69,9 @@ import {
   useRetainedThreadDetailIds,
 } from "../threadDetailSubscriptionRetention";
 import { getThreadFromState } from "../threadDerivation";
+import { useAppDensity } from "../hooks/useAppDensity";
 import { useAppTypography } from "../hooks/useAppTypography";
+import { usePreloadSettingsRoute } from "../hooks/usePreloadSettingsRoute";
 import { useSyncDesktopTopBarTrafficLightGutterZoom } from "../hooks/useDesktopTopBarGutter";
 import { useTheme } from "../hooks/useTheme";
 import { useNativeFontSmoothing } from "../hooks/useNativeFontSmoothing";
@@ -145,6 +147,8 @@ export const Route = createRootRouteWithContext<{
 
 function RootRouteView() {
   useAppTypography();
+  useAppDensity();
+  usePreloadSettingsRoute();
   useNativeFontSmoothing();
   useSyncDesktopTopBarTrafficLightGutterZoom();
   useTheme();
@@ -759,7 +763,7 @@ function EventRouter() {
   const removeOrphanedTerminalStates = useTerminalStateStore(
     (store) => store.removeOrphanedTerminalStates,
   );
-  const setWorkspaceHomeDir = useWorkspaceStore((store) => store.setHomeDir);
+  const setServerWorkspacePaths = useWorkspaceStore((store) => store.setServerWorkspacePaths);
   const workspacePages = useWorkspaceStore((store) => store.workspacePages);
   const serverThreads = useStore((store) => store.threads);
   const queryClient = useQueryClient();
@@ -1234,7 +1238,10 @@ function EventRouter() {
       .catch(() => undefined);
     const unsubWelcome = onServerWelcome((payload) => {
       void (async () => {
-        setWorkspaceHomeDir(payload.homeDir);
+        setServerWorkspacePaths({
+          homeDir: payload.homeDir,
+          chatWorkspaceRoot: payload.chatWorkspaceRoot,
+        });
         await ensureScopedSubscriptions();
         if (disposed) {
           return;
@@ -1406,7 +1413,7 @@ function EventRouter() {
     queryClient,
     removeOrphanedTerminalStates,
     setProjectExpanded,
-    setWorkspaceHomeDir,
+    setServerWorkspacePaths,
     syncServerShellSnapshot,
     syncServerThreadDetailHotPath,
   ]);

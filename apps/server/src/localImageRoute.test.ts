@@ -13,7 +13,7 @@ import { HttpRouter } from "effect/unstable/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ServerAuth, type ServerAuthShape } from "./auth/Services/ServerAuth";
-import { ServerConfig, type ServerConfigShape } from "./config";
+import { resolveDefaultChatWorkspaceRoot, ServerConfig, type ServerConfigShape } from "./config";
 import { attachmentsEffectRouteLayer, localImageEffectRouteLayer } from "./http";
 
 const tempDirs: string[] = [];
@@ -38,6 +38,7 @@ function makeServerConfig(overrides: Partial<ServerConfigShape> = {}): ServerCon
     host: undefined,
     cwd: baseDir,
     homeDir: os.homedir(),
+    chatWorkspaceRoot: resolveDefaultChatWorkspaceRoot({ homeDir: os.homedir() }),
     baseDir,
     keybindingsConfigPath: path.join(baseDir, "keybindings.json"),
     serverRuntimeStatePath: path.join(baseDir, "runtime.json"),

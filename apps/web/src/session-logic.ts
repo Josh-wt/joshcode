@@ -55,6 +55,7 @@ export const PROVIDER_OPTIONS: Array<{
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
+  turnId?: TurnId | null;
   label: string;
   detail?: string;
   command?: string;
@@ -190,6 +191,27 @@ function formatDuration(durationMs: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+export function formatClockDuration(durationMs: number): string {
+  const elapsedSeconds = Math.max(0, Math.floor(durationMs / 1_000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`;
+
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+export function formatClockElapsed(startIso: string, endIso: string | undefined): string | null {
+  if (!endIso) return null;
+  const startedAt = Date.parse(startIso);
+  const endedAt = Date.parse(endIso);
+  if (Number.isNaN(startedAt) || Number.isNaN(endedAt) || endedAt < startedAt) {
+    return null;
+  }
+  return formatClockDuration(endedAt - startedAt);
+}
+
 export function formatElapsed(startIso: string, endIso: string | undefined): string | null {
   if (!endIso) return null;
   const startedAt = Date.parse(startIso);
@@ -228,6 +250,23 @@ export function hasLiveLatestTurn(
     return false;
   }
   return !isLatestTurnSettled(latestTurn, session);
+}
+
+/**
+ * Pending approval / user-input requests are only actionable while the session
+ * that raised them can still receive the answer. Once the session is closed or
+ * errored the request is dead — status surfaces (sidebar pill, kanban column)
+ * must not present the thread as awaiting action forever after a provider
+ * crash. A thread with no session yet keeps the request actionable: the flag
+ * can arrive ahead of the session snapshot.
+ */
+export function canSessionAnswerPendingRequests(
+  session: Pick<ThreadSession, "status"> | null | undefined,
+): boolean {
+  if (!session) {
+    return true;
+  }
+  return session.status !== "closed" && session.status !== "error";
 }
 
 export function deriveActiveWorkStartedAt(
@@ -672,15 +711,12 @@ export function hasActionableProposedPlan(
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
+  options: { visibleTurnIds?: ReadonlySet<TurnId | string> } = {},
 ): WorkLogEntry[] {
+  const visibleTurnIds = options.visibleTurnIds;
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
-    .filter((activity) =>
-      latestTurnId
-        ? activity.turnId === latestTurnId ||
-          (activity.kind === "context-compaction" && activity.turnId === null)
-        : true,
-    )
+    .filter((activity) => shouldKeepActivityForWorkLog(activity, latestTurnId, visibleTurnIds))
     .filter((activity) => !shouldOmitRoutedCollabAgentToolActivity(activity))
     .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
     .filter((activity) => !isQuietTurnLifecycleActivity(activity))
@@ -702,6 +738,26 @@ export function deriveWorkLogEntries(
       ...entry
     }) => entry,
   );
+}
+
+function shouldKeepActivityForWorkLog(
+  activity: OrchestrationThreadActivity,
+  latestTurnId: TurnId | undefined,
+  visibleTurnIds: ReadonlySet<TurnId | string> | undefined,
+): boolean {
+  // Thread-level compaction progress has no provider turn id but should stay visible.
+  if (activity.kind === "context-compaction" && activity.turnId === null) {
+    return true;
+  }
+
+  // An empty set means the transcript has no turn-stamped assistant messages
+  // (e.g. providers that never supply turn ids); fall back to the legacy
+  // latest-turn filter instead of hiding the whole work log.
+  if (visibleTurnIds && visibleTurnIds.size > 0) {
+    return activity.turnId !== null && visibleTurnIds.has(activity.turnId);
+  }
+
+  return latestTurnId ? activity.turnId === latestTurnId : true;
 }
 
 function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): boolean {
@@ -761,6 +817,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
+    ...(activity.turnId !== null ? { turnId: activity.turnId } : {}),
     label: activity.summary,
     tone: activity.tone === "approval" ? "info" : activity.tone,
     activityKind: activity.kind,
@@ -998,9 +1055,11 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolName = next.toolName ?? previous.toolName;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const turnId = next.turnId ?? previous.turnId;
   return {
     ...previous,
     ...next,
+    ...(turnId !== undefined ? { turnId } : {}),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),

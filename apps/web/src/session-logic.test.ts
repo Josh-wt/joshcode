@@ -804,6 +804,55 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
+  it("keeps work for every visible transcript turn when requested", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ id: "turn-1", turnId: "turn-1", summary: "First tool", kind: "tool.started" }),
+      makeActivity({
+        id: "turn-2",
+        turnId: "turn-2",
+        summary: "Second tool complete",
+        kind: "tool.completed",
+      }),
+      makeActivity({
+        id: "turn-3",
+        turnId: "turn-3",
+        summary: "Hidden tool",
+        kind: "tool.started",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"), {
+      visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1"), TurnId.makeUnsafe("turn-2")]),
+    });
+
+    expect(entries.map((entry) => [entry.id, entry.turnId])).toEqual([
+      ["turn-1", TurnId.makeUnsafe("turn-1")],
+      ["turn-2", TurnId.makeUnsafe("turn-2")],
+    ]);
+  });
+
+  it("falls back to the latest-turn filter when visible turn ids are empty", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ id: "turn-1", turnId: "turn-1", summary: "First tool", kind: "tool.started" }),
+      makeActivity({
+        id: "turn-2",
+        turnId: "turn-2",
+        summary: "Second tool complete",
+        kind: "tool.completed",
+      }),
+    ];
+
+    const filtered = deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"), {
+      visibleTurnIds: new Set(),
+    });
+    expect(filtered.map((entry) => entry.id)).toEqual(["turn-2"]);
+
+    const unfiltered = deriveWorkLogEntries(activities, undefined, {
+      visibleTurnIds: new Set(),
+    });
+    expect(unfiltered.map((entry) => entry.id)).toEqual(["turn-1", "turn-2"]);
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

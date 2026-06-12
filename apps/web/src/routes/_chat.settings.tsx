@@ -41,6 +41,8 @@ import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import {
   type AppSettings,
+  DEFAULT_UI_DENSITY,
+  type UiDensity,
   MAX_CHAT_FONT_SIZE_PX,
   MAX_TERMINAL_FONT_SIZE_PX,
   getCustomModelsForProvider,
@@ -79,6 +81,7 @@ import { Select, SelectItem, SelectTrigger, SelectValue } from "../components/ui
 import { Switch } from "../components/ui/switch";
 import { toastManager } from "../components/ui/toast";
 import { ThemePackEditor } from "../components/ThemePackEditor";
+import { DebouncedSettingTextInput } from "../components/settings/DebouncedSettingTextInput";
 import {
   SettingsCard,
   SettingsRow,
@@ -101,6 +104,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
+import { isUiDensity } from "../lib/appDensity";
 import { CentralIcon } from "../lib/central-icons";
 import { gitRemoveWorktreeMutationOptions } from "../lib/gitReactQuery";
 import {
@@ -150,7 +154,7 @@ import {
 } from "../settingsPanelStyles";
 import { useStore } from "../store";
 import ReleaseHistoryDialog from "../components/ReleaseHistoryDialog";
-import { createAllThreadsSelector } from "../storeSelectors";
+import { createAllThreadsMessagelessSelector, createThreadShellsSelector } from "../storeSelectors";
 import { formatRelativeTime } from "../lib/relativeTime";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { sameProviderOrder } from "../providerOrdering";
@@ -160,6 +164,28 @@ import {
 } from "../providerUpdates";
 
 // ── Settings taxonomy ──────────────────────────────────────────────────────
+
+const UI_DENSITY_OPTIONS = [
+  {
+    value: "compact",
+    label: "Compact",
+    description: "Tighter spacing in the sidebar, composer, and settings rows.",
+  },
+  {
+    value: "comfortable",
+    label: "Comfortable",
+    description: "Balanced spacing for everyday use.",
+  },
+  {
+    value: "spacious",
+    label: "Spacious",
+    description: "More breathing room across the main workspace surfaces.",
+  },
+] as const satisfies ReadonlyArray<{
+  value: UiDensity;
+  label: string;
+  description: string;
+}>;
 
 const THEME_OPTIONS = [
   {
@@ -614,16 +640,23 @@ function SettingsRouteView() {
   );
   const syncServerShellSnapshot = useStore((store) => store.syncServerShellSnapshot);
   const syncServerReadModel = useStore((store) => store.syncServerReadModel);
-  const threads = useStore(useMemo(() => createAllThreadsSelector(), []));
+  // Shell-level subscription on purpose: the full-thread selector invalidates on every
+  // streaming message/activity tick, which would re-render this whole route while a
+  // turn is running. Settings only needs thread metadata (and message emptiness below).
+  const threadShells = useStore(useMemo(() => createThreadShellsSelector(), []));
+  const allThreadsMessageless = useStore(useMemo(() => createAllThreadsMessagelessSelector(), []));
   const projects = useStore((store) => store.projects);
   const threadsHydrated = useStore((store) => store.threadsHydrated);
-  const archivedThreads = threads.filter((thread) => thread.archivedAt != null);
+  const archivedThreads = useMemo(
+    () => threadShells.filter((thread) => thread.archivedAt != null),
+    [threadShells],
+  );
   const shouldOfferRecoveryTools = useMemo(() => {
     if (!threadsHydrated || projects.length === 0) {
       return false;
     }
-    return threads.length === 0 || threads.every((thread) => thread.messages.length === 0);
-  }, [projects.length, threads, threadsHydrated]);
+    return threadShells.length === 0 || allThreadsMessageless;
+  }, [allThreadsMessageless, projects.length, threadShells.length, threadsHydrated]);
 
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [isRepairingLocalState, setIsRepairingLocalState] = useState(false);
@@ -752,40 +785,85 @@ function SettingsRouteView() {
     activeSection === "general" && settingsTarget === SETTINGS_TARGETS.environmentPanel,
     environmentPanelRef,
   );
-  const managedWorktrees = serverWorktreesQuery.data?.worktrees ?? [];
-  const worktreesByWorkspaceRoot = managedWorktrees.reduce<
-    Array<{
+
+  // Sidebar search deep-links to an individual row via its `settingRowAnchorId`. The active
+  // panel renders synchronously with this section change, so scroll once the row has mounted.
+  useEffect(() => {
+    if (!settingsTarget || !settingsTarget.startsWith("setting-")) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document
+        .getElementById(settingsTarget)
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection, settingsTarget]);
+  const managedWorktrees = serverWorktreesQuery.data?.worktrees;
+  const worktreesByWorkspaceRoot = useMemo(() => {
+    type WorktreeGroup = {
       workspaceRoot: string;
       worktrees: Array<{
         path: string;
-        linkedThreads: typeof threads;
+        linkedThreads: typeof threadShells;
       }>;
-    }>
-  >((groups, worktree) => {
-    const linkedThreads = threads.filter((thread) => {
-      const candidatePaths = [
-        normalizeManagedWorktreePath(thread.worktreePath),
-        normalizeManagedWorktreePath(thread.associatedWorktreePath),
-      ];
-      return candidatePaths.includes(worktree.path);
-    });
-    const existingGroup = groups.find((group) => group.workspaceRoot === worktree.workspaceRoot);
-    const nextWorktree = {
-      path: worktree.path,
-      linkedThreads,
     };
-    if (existingGroup) {
-      existingGroup.worktrees.push(nextWorktree);
-    } else {
-      groups.push({
-        workspaceRoot: worktree.workspaceRoot,
-        worktrees: [nextWorktree],
+    // Map keeps grouping O(worktrees) instead of the previous O(worktrees²) `groups.find`,
+    // while `groups` preserves the original first-seen workspace-root order.
+    const groups: WorktreeGroup[] = [];
+    const groupByRoot = new Map<string, WorktreeGroup>();
+    for (const worktree of managedWorktrees ?? []) {
+      const linkedThreads = threadShells.filter((thread) => {
+        const candidatePaths = [
+          normalizeManagedWorktreePath(thread.worktreePath),
+          normalizeManagedWorktreePath(thread.associatedWorktreePath),
+        ];
+        return candidatePaths.includes(worktree.path);
       });
+      const nextWorktree = { path: worktree.path, linkedThreads };
+      const existingGroup = groupByRoot.get(worktree.workspaceRoot);
+      if (existingGroup) {
+        existingGroup.worktrees.push(nextWorktree);
+      } else {
+        const group: WorktreeGroup = {
+          workspaceRoot: worktree.workspaceRoot,
+          worktrees: [nextWorktree],
+        };
+        groups.push(group);
+        groupByRoot.set(worktree.workspaceRoot, group);
+      }
     }
     return groups;
-  }, []);
+  }, [managedWorktrees, threadShells]);
 
-  const gitTextGenerationModelOptions = getGitTextGenerationModelOptions(settings);
+  // Builds provider model-option arrays; only the Models panel reads it. Memoize on the
+  // narrow inputs the helper actually uses (destructured so exhaustive-deps stays exact) so
+  // typing in any other settings field — every keystroke re-renders this monolithic route —
+  // doesn't rebuild these lists.
+  const {
+    customCodexModels,
+    customKiloModels,
+    customOpenCodeModels,
+    textGenerationModel,
+    textGenerationProvider,
+  } = settings;
+  const gitTextGenerationModelOptions = useMemo(
+    () =>
+      getGitTextGenerationModelOptions({
+        customCodexModels,
+        customKiloModels,
+        customOpenCodeModels,
+        textGenerationModel,
+        textGenerationProvider,
+      }),
+    [
+      customCodexModels,
+      customKiloModels,
+      customOpenCodeModels,
+      textGenerationModel,
+      textGenerationProvider,
+    ],
+  );
   const currentGitTextGenerationProvider = settings.textGenerationProvider ?? "codex";
   const currentGitTextGenerationModel =
     settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL;
@@ -816,13 +894,17 @@ function SettingsRouteView() {
     settings.customKiloModels.length +
     settings.customOpenCodeModels.length +
     settings.customPiModels.length;
-  const savedCustomModelRows = MODEL_PROVIDER_SETTINGS.flatMap((providerSettings) =>
-    getCustomModelsForProvider(settings, providerSettings.provider).map((slug) => ({
-      key: `${providerSettings.provider}:${slug}`,
-      provider: providerSettings.provider,
-      providerTitle: providerSettings.title,
-      slug,
-    })),
+  const savedCustomModelRows = useMemo(
+    () =>
+      MODEL_PROVIDER_SETTINGS.flatMap((providerSettings) =>
+        getCustomModelsForProvider(settings, providerSettings.provider).map((slug) => ({
+          key: `${providerSettings.provider}:${slug}`,
+          provider: providerSettings.provider,
+          providerTitle: providerSettings.title,
+          slug,
+        })),
+      ),
+    [settings],
   );
   const visibleCustomModelRows = showAllCustomModels
     ? savedCustomModelRows
@@ -859,6 +941,7 @@ function SettingsRouteView() {
     ...(settings.showWorkspaceSection !== defaults.showWorkspaceSection
       ? ["Workspace section"]
       : []),
+    ...(settings.uiDensity !== defaults.uiDensity ? ["UI density"] : []),
     ...(settings.chatFontSizePx !== defaults.chatFontSizePx ? ["Base font size"] : []),
     ...(settings.terminalFontSizePx !== defaults.terminalFontSizePx ? ["Terminal font size"] : []),
     ...(settings.terminalFontFamily !== defaults.terminalFontFamily ? ["Terminal font"] : []),
@@ -1704,6 +1787,36 @@ function SettingsRouteView() {
 
         <SettingsCard>
           <SettingsRow
+            title="UI density"
+            description="Control spacing in the sidebar, composer, chat gutters, and settings rows without changing font size."
+            resetAction={
+              settings.uiDensity !== defaults.uiDensity ? (
+                <SettingResetButton
+                  label="UI density"
+                  onClick={() =>
+                    updateSettings({
+                      uiDensity: DEFAULT_UI_DENSITY,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <SettingsSegmentedControl
+                value={settings.uiDensity}
+                onValueChange={(value) => {
+                  if (!isUiDensity(value)) {
+                    return;
+                  }
+                  updateSettings({ uiDensity: value });
+                }}
+                ariaLabel="UI density"
+                options={UI_DENSITY_OPTIONS}
+              />
+            }
+          />
+
+          <SettingsRow
             title="Base font size"
             description="Adjust the app text base in pixels. Chat and UI typography scale proportionally from this value."
             resetAction={
@@ -1722,10 +1835,12 @@ function SettingsRouteView() {
               <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
                 <Input
                   type="number"
+                  size="sm"
                   min={MIN_CHAT_FONT_SIZE_PX}
                   max={MAX_CHAT_FONT_SIZE_PX}
                   step={1}
                   inputMode="numeric"
+                  variant="soft"
                   className="w-full text-right sm:w-20"
                   value={String(settings.chatFontSizePx)}
                   onChange={(event) => {
@@ -1761,10 +1876,12 @@ function SettingsRouteView() {
               <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
                 <Input
                   type="number"
+                  size="sm"
                   min={MIN_TERMINAL_FONT_SIZE_PX}
                   max={MAX_TERMINAL_FONT_SIZE_PX}
                   step={1}
                   inputMode="numeric"
+                  variant="soft"
                   className="w-full text-right sm:w-20"
                   value={String(settings.terminalFontSizePx)}
                   onChange={(event) => {
@@ -1810,6 +1927,8 @@ function SettingsRouteView() {
                   }}
                 >
                   <AutocompleteInput
+                    size="sm"
+                    variant="soft"
                     showTrigger
                     showClear={settings.terminalFontFamily.length > 0}
                     spellCheck={false}
@@ -2339,6 +2458,8 @@ function SettingsRouteView() {
               </Select>
               <Input
                 id="custom-model-slug"
+                size="sm"
+                variant="soft"
                 value={selectedCustomModelInput}
                 onChange={(event) => {
                   const value = event.target.value;
@@ -2785,28 +2906,30 @@ function SettingsRouteView() {
                               <span className="block text-xs font-medium text-foreground">
                                 {providerSettings.title} binary path
                               </span>
-                              <Input
+                              <DebouncedSettingTextInput
                                 id={`provider-install-${providerSettings.binaryPathKey}`}
+                                size="sm"
+                                variant="soft"
                                 className="mt-1"
                                 value={binaryPathValue}
-                                onChange={(event) =>
+                                onCommit={(nextValue) =>
                                   updateSettings(
                                     providerSettings.binaryPathKey === "claudeBinaryPath"
-                                      ? { claudeBinaryPath: event.target.value }
+                                      ? { claudeBinaryPath: nextValue }
                                       : providerSettings.binaryPathKey === "cursorBinaryPath"
-                                        ? { cursorBinaryPath: event.target.value }
+                                        ? { cursorBinaryPath: nextValue }
                                         : providerSettings.binaryPathKey === "geminiBinaryPath"
-                                          ? { geminiBinaryPath: event.target.value }
+                                          ? { geminiBinaryPath: nextValue }
                                           : providerSettings.binaryPathKey === "grokBinaryPath"
-                                            ? { grokBinaryPath: event.target.value }
+                                            ? { grokBinaryPath: nextValue }
                                             : providerSettings.binaryPathKey === "kiloBinaryPath"
-                                              ? { kiloBinaryPath: event.target.value }
+                                              ? { kiloBinaryPath: nextValue }
                                               : providerSettings.binaryPathKey ===
                                                   "openCodeBinaryPath"
-                                                ? { openCodeBinaryPath: event.target.value }
+                                                ? { openCodeBinaryPath: nextValue }
                                                 : providerSettings.binaryPathKey === "piBinaryPath"
-                                                  ? { piBinaryPath: event.target.value }
-                                                  : { codexBinaryPath: event.target.value },
+                                                  ? { piBinaryPath: nextValue }
+                                                  : { codexBinaryPath: nextValue },
                                   )
                                 }
                                 placeholder={providerSettings.binaryPlaceholder}
@@ -2825,13 +2948,15 @@ function SettingsRouteView() {
                                 <span className="block text-xs font-medium text-foreground">
                                   CODEX_HOME path
                                 </span>
-                                <Input
+                                <DebouncedSettingTextInput
                                   id={`provider-install-${providerSettings.homePathKey}`}
+                                  size="sm"
+                                  variant="soft"
                                   className="mt-1"
                                   value={codexHomePath}
-                                  onChange={(event) =>
+                                  onCommit={(nextValue) =>
                                     updateSettings({
-                                      codexHomePath: event.target.value,
+                                      codexHomePath: nextValue,
                                     })
                                   }
                                   placeholder={providerSettings.homePlaceholder}
@@ -2853,13 +2978,15 @@ function SettingsRouteView() {
                                 <span className="block text-xs font-medium text-foreground">
                                   Pi agent directory
                                 </span>
-                                <Input
+                                <DebouncedSettingTextInput
                                   id={`provider-install-${providerSettings.agentDirKey}`}
+                                  size="sm"
+                                  variant="soft"
                                   className="mt-1"
                                   value={piAgentDir}
-                                  onChange={(event) =>
+                                  onCommit={(nextValue) =>
                                     updateSettings({
-                                      piAgentDir: event.target.value,
+                                      piAgentDir: nextValue,
                                     })
                                   }
                                   placeholder={providerSettings.agentDirPlaceholder}
@@ -2881,13 +3008,15 @@ function SettingsRouteView() {
                                 <span className="block text-xs font-medium text-foreground">
                                   Cursor API endpoint
                                 </span>
-                                <Input
+                                <DebouncedSettingTextInput
                                   id={`provider-install-${providerSettings.apiEndpointKey}`}
+                                  size="sm"
+                                  variant="soft"
                                   className="mt-1"
                                   value={cursorApiEndpoint}
-                                  onChange={(event) =>
+                                  onCommit={(nextValue) =>
                                     updateSettings({
-                                      cursorApiEndpoint: event.target.value,
+                                      cursorApiEndpoint: nextValue,
                                     })
                                   }
                                   placeholder={providerSettings.apiEndpointPlaceholder}
@@ -2909,19 +3038,21 @@ function SettingsRouteView() {
                                 <span className="block text-xs font-medium text-foreground">
                                   {providerSettings.title} server URL
                                 </span>
-                                <Input
+                                <DebouncedSettingTextInput
                                   id={`provider-install-${providerSettings.serverUrlKey}`}
+                                  size="sm"
+                                  variant="soft"
                                   className="mt-1"
                                   value={
                                     providerSettings.serverUrlKey === "kiloServerUrl"
                                       ? kiloServerUrl
                                       : openCodeServerUrl
                                   }
-                                  onChange={(event) =>
+                                  onCommit={(nextValue) =>
                                     updateSettings(
                                       providerSettings.serverUrlKey === "kiloServerUrl"
-                                        ? { kiloServerUrl: event.target.value }
-                                        : { openCodeServerUrl: event.target.value },
+                                        ? { kiloServerUrl: nextValue }
+                                        : { openCodeServerUrl: nextValue },
                                     )
                                   }
                                   placeholder={providerSettings.serverUrlPlaceholder}
@@ -2943,19 +3074,21 @@ function SettingsRouteView() {
                                 <span className="block text-xs font-medium text-foreground">
                                   {providerSettings.title} server password
                                 </span>
-                                <Input
+                                <DebouncedSettingTextInput
                                   id={`provider-install-${providerSettings.serverPasswordKey}`}
+                                  size="sm"
+                                  variant="soft"
                                   className="mt-1"
                                   value={
                                     providerSettings.serverPasswordKey === "kiloServerPassword"
                                       ? kiloServerPassword
                                       : openCodeServerPassword
                                   }
-                                  onChange={(event) =>
+                                  onCommit={(nextValue) =>
                                     updateSettings(
                                       providerSettings.serverPasswordKey === "kiloServerPassword"
-                                        ? { kiloServerPassword: event.target.value }
-                                        : { openCodeServerPassword: event.target.value },
+                                        ? { kiloServerPassword: nextValue }
+                                        : { openCodeServerPassword: nextValue },
                                     )
                                   }
                                   placeholder={providerSettings.serverPasswordPlaceholder}

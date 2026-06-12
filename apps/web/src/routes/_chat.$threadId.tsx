@@ -50,6 +50,7 @@ import {
   stripDiffSearchParams,
 } from "../diffRouteSearch";
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
+import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { resolveActiveSplitView, isSplitRoute } from "../splitViewRoute";
 import { canSubdividePane, collectLeaves, findLeafPaneById } from "../splitView.logic";
 import {
@@ -102,6 +103,7 @@ import {
 } from "../lib/panelResize";
 import { getSidechatCreator } from "../lib/sidechatCreatorRegistry";
 import { toastManager } from "../components/ui/toast";
+import { useAppSettings } from "../appSettings";
 import { useStore } from "../store";
 import { DEFAULT_INTERACTION_MODE } from "../types";
 import {
@@ -111,6 +113,7 @@ import {
   createThreadExistsSelector,
   createThreadProjectIdSelector,
 } from "../storeSelectors";
+import { sortThreadsForSidebar } from "../components/Sidebar.logic";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -1518,6 +1521,9 @@ function SingleChatSurface(props: {
   const activeProject = useStore(
     useMemo(() => createProjectSelector(props.projectId), [props.projectId]),
   );
+  const projects = useStore((store) => store.projects);
+  const { settings: appSettings } = useAppSettings();
+  const { handleNewThread } = useHandleNewThread();
   const queryClient = useQueryClient();
   const lastAppliedRoutePanelSearchKeyRef = useRef<string | null>(null);
   const [editorExpandedDirectories, setEditorExpandedDirectories] = useState<ReadonlySet<string>>(
@@ -1842,6 +1848,65 @@ function SingleChatSurface(props: {
   // selector, which re-emits on every streaming token of any thread and would
   // otherwise re-render the entire chat surface + right dock + active pane.
   const threadSummaries = useStore(useMemo(() => createSidebarThreadSummariesSelector(), []));
+  const editorProjectOptions = useMemo(
+    () =>
+      projects.flatMap((project) =>
+        project.kind === "project" ? [{ id: project.id, name: project.name }] : [],
+      ),
+    [projects],
+  );
+  const openEditorProject = useCallback(
+    async (projectId: ProjectId) => {
+      const latestThread = sortThreadsForSidebar(
+        threadSummaries.filter((thread) => thread.projectId === projectId),
+        appSettings.sidebarThreadSortOrder,
+      )[0];
+
+      if (latestThread) {
+        await navigate({
+          to: "/$threadId",
+          params: { threadId: latestThread.id },
+          search: (previous) => ({
+            ...stripEditorViewSearchParams(stripDiffSearchParams(previous)),
+            view: "editor",
+          }),
+        });
+        return;
+      }
+
+      await handleNewThread(
+        projectId,
+        {
+          envMode: appSettings.defaultThreadEnvMode,
+        },
+        {
+          search: (previous) => ({
+            ...stripEditorViewSearchParams(stripDiffSearchParams(previous)),
+            view: "editor",
+          }),
+        },
+      );
+    },
+    [
+      appSettings.defaultThreadEnvMode,
+      appSettings.sidebarThreadSortOrder,
+      handleNewThread,
+      navigate,
+      threadSummaries,
+    ],
+  );
+  const handleSelectEditorProject = useCallback(
+    (projectId: ProjectId) => {
+      void openEditorProject(projectId).catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open project",
+          description: error instanceof Error ? error.message : "The project could not be opened.",
+        });
+      });
+    },
+    [openEditorProject],
+  );
   const paneLabelOverrides = useMemo(() => {
     const hasSidechatPane = dockState.panes.some((pane) => pane.kind === "sidechat");
     if (!hasSidechatPane) {
@@ -1851,7 +1916,7 @@ function SingleChatSurface(props: {
     const overrides: Record<string, string | undefined> = {};
     for (const pane of dockState.panes) {
       if (pane.kind === "sidechat" && pane.threadId) {
-        overrides[pane.id] = titleByThreadId.get(pane.threadId) || "Side chat";
+        overrides[pane.id] = titleByThreadId.get(pane.threadId) || "Side";
       }
     }
     return overrides;
@@ -1887,19 +1952,17 @@ function SingleChatSurface(props: {
         if (!createSidechat) {
           toastManager.add({
             type: "warning",
-            title: "Sidechat is unavailable",
-            description: "Open a server-backed main thread before starting a sidechat.",
+            title: "Side is unavailable",
+            description: "Open a server-backed main thread before starting Side.",
           });
           return;
         }
         void createSidechat().catch((error) => {
           toastManager.add({
             type: "error",
-            title: "Could not start sidechat",
+            title: "Could not start Side",
             description:
-              error instanceof Error
-                ? error.message
-                : "An error occurred while creating the sidechat.",
+              error instanceof Error ? error.message : "An error occurred while creating Side.",
           });
         });
         return;
@@ -2080,6 +2143,8 @@ function SingleChatSurface(props: {
         <EditorWorkspaceView
           workspaceRoot={activeProject?.cwd ?? null}
           projectName={activeProject?.name ?? null}
+          currentProjectId={activeProject?.id ?? null}
+          projectOptions={editorProjectOptions}
           selectedFilePath={selectedEditorFilePath}
           expandedDirectories={editorExpandedDirectories}
           centerMode={editorCenterMode}
@@ -2094,6 +2159,7 @@ function SingleChatSurface(props: {
           onExitEditorView={handleCloseEditorView}
           onReferenceInChat={handleEditorReferenceInChat}
           onAskWhyInChat={handleEditorAskWhyInChat}
+          onSelectProject={handleSelectEditorProject}
           diffPanel={
             <LazyDiffPanel
               mode="sidebar"

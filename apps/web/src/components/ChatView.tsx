@@ -1,7 +1,6 @@
 import {
   type ApprovalRequestId,
   DEFAULT_MODEL_BY_PROVIDER,
-  type ClaudeCodeEffort,
   MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -10,6 +9,7 @@ import {
   type ProjectEntry,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderAgentDescriptor,
   type ProviderMentionReference,
   type ProviderNativeCommandDescriptor,
   type ProviderPluginDescriptor,
@@ -19,7 +19,6 @@ import {
   type ProviderUserInputAnswers,
   type PinnedMessage,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
   type ServerProviderStatus,
   ThreadId,
@@ -35,11 +34,7 @@ import {
   RuntimeMode,
   type ThreadWorkspaceContext,
 } from "@t3tools/contracts";
-import {
-  applyClaudePromptEffortPrefix,
-  getModelCapabilities,
-  normalizeModelSlug,
-} from "@t3tools/shared/model";
+import { getModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
 import { resolveTailUserMessageEditTarget } from "@t3tools/shared/conversationEdit";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import {
@@ -87,17 +82,22 @@ import {
 } from "~/lib/providerDiscoveryReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
 import {
   formatComposerMentionToken,
   filterPromptProviderMentionReferences,
   filterPromptSkillReferences,
+  providerMentionReferencesEqual,
+  providerSkillReferencesEqual,
+  skillMentionPrefix,
 } from "~/lib/composerMentions";
 import { getLocalFolderBrowseRootPath, isLocalFolderMentionQuery } from "~/lib/localFolderMentions";
 import {
+  findProviderStatus,
   isProviderUsable,
   normalizeCustomBinaryPath,
   normalizeProviderStatusForLocalConfig,
-  providerUnavailableReason,
+  resolveProviderSendAvailability,
 } from "~/lib/providerAvailability";
 import {
   loadConfirmedCustomBinaryPaths,
@@ -113,8 +113,17 @@ import {
   maybeResolveBrowserPromptAttachment,
   type BrowserPromptAttachmentResolution,
 } from "../lib/browserPromptContext";
+import {
+  IMAGE_SIZE_LIMIT_LABEL,
+  buildComposerImageAttachmentsFromFiles,
+  buildUploadComposerAttachments,
+  cloneComposerImageAttachment,
+  formatOutgoingComposerPrompt,
+  readFileAsDataUrl,
+} from "../lib/composerSend";
 import { dispatchThreadRename } from "../lib/threadRename";
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
+import { useComposerDropzone } from "../hooks/useComposerDropzone";
 import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
 import {
   buildThreadBreadcrumbs,
@@ -171,7 +180,6 @@ import {
   hasLiveTurnTailWork,
   isProviderFileEditWorkLogEntry,
   isLatestTurnSettled,
-  WORK_LOG_PRESENTATION_VERSION,
   type ActiveTaskListState,
 } from "../session-logic";
 import {
@@ -261,6 +269,7 @@ import {
   getCustomModelsByProvider,
   getProviderStartOptions,
   resolveAppModelSelection,
+  resolveAssistantDeliveryMode,
   useAppSettings,
 } from "../appSettings";
 import { resolveTerminalNewAction } from "../lib/terminalNewAction";
@@ -279,7 +288,7 @@ import {
   useEffectiveComposerModelState,
 } from "../composerDraftStore";
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
-import { appendComposerPromptText, CHAT_FILE_REFERENCE_DRAG_TYPE } from "../lib/chatReferences";
+import { appendComposerPromptText } from "../lib/chatReferences";
 import {
   appendOriginalTerminalContextBlock,
   appendTerminalContextsToPrompt,
@@ -430,7 +439,6 @@ import {
   DISMISSED_PROVIDER_HEALTH_BANNERS_KEY,
   DismissedProviderHealthBannersSchema,
   shouldRenderTerminalWorkspace,
-  cloneComposerImageForRetry,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
@@ -441,7 +449,6 @@ import {
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
-  readFileAsDataUrl,
   shouldRenderProviderHealthBanner,
   resolveRuntimeModeAfterApprovalDecision,
   revokeBlobPreviewUrl,
@@ -464,7 +471,7 @@ import {
 import {
   buildModelSelection,
   buildNextProviderOptions,
-  formatProviderModelOptionName,
+  mergeDynamicModelOptions,
   type ProviderModelOption,
 } from "../providerModelOptions";
 import {
@@ -473,7 +480,6 @@ import {
 } from "../lib/projectCreateRecovery";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
-const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PINNED_MESSAGES: readonly PinnedMessage[] = [];
@@ -526,6 +532,7 @@ function canHandleComposerPickerShortcut(
 }
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
+const EMPTY_PROVIDER_AGENTS: readonly ProviderAgentDescriptor[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const MAX_DISMISSED_PROVIDER_HEALTH_BANNERS = 50;
 
@@ -606,19 +613,6 @@ type ComposerPluginSuggestion = {
 
 const EMPTY_COMPOSER_PLUGIN_SUGGESTIONS: ComposerPluginSuggestion[] = [];
 
-function formatOutgoingPrompt(params: {
-  provider: ProviderKind;
-  model: string | null;
-  effort: string | null;
-  text: string;
-}): string {
-  const caps = getModelCapabilities(params.provider, params.model);
-  if (params.effort && caps.promptInjectedEffortLevels.includes(params.effort)) {
-    return applyClaudePromptEffortPrefix(params.text, params.effort as ClaudeCodeEffort | null);
-  }
-  return params.text;
-}
-
 function buildQueuedComposerPreviewText(input: {
   trimmedPrompt: string;
   images: ReadonlyArray<ComposerImageAttachment>;
@@ -655,104 +649,6 @@ function warnVoiceGuard(event: string, details?: Record<string, unknown>) {
   }
   console.warn(`[voice] ${event}`);
 }
-
-function normalizeDynamicModelSlug(provider: ProviderKind, slug: string): string {
-  if (provider === "claudeAgent") {
-    const withoutContextSuffix = slug.replace(/\[[^\]]+\]$/u, "");
-    return normalizeModelSlug(withoutContextSuffix, provider) ?? withoutContextSuffix;
-  }
-  if (provider === "grok") {
-    return slug.trim();
-  }
-  return normalizeModelSlug(slug, provider) ?? slug;
-}
-
-function mergeDynamicModelOptions(input: {
-  provider: ProviderKind;
-  staticOptions: ReadonlyArray<ProviderModelOption & { isCustom?: boolean }>;
-  dynamicModels: ReadonlyArray<{
-    slug: string;
-    name?: string | null;
-    upstreamProviderId?: string | null;
-    upstreamProviderName?: string | null;
-  }>;
-}): ReadonlyArray<ProviderModelOption & { isCustom?: boolean }> {
-  const staticNameBySlug = new Map(input.staticOptions.map((model) => [model.slug, model.name]));
-  const dynamicNormalizedSlugs = new Set<string>();
-  const normalizedDynamicOptions: ProviderModelOption[] = [];
-
-  for (const dynamicModel of input.dynamicModels) {
-    const rawName = dynamicModel.name?.trim() ?? "";
-    const isClaudeDefaultAlias =
-      input.provider === "claudeAgent" &&
-      (rawName.toLowerCase() === "default (recommended)" ||
-        rawName.toLowerCase() === "default recommended" ||
-        dynamicModel.slug.trim().toLowerCase() === "default");
-    if (isClaudeDefaultAlias) {
-      continue;
-    }
-
-    const normalizedSlug = normalizeDynamicModelSlug(input.provider, dynamicModel.slug);
-    const rawSlug = dynamicModel.slug.trim().toLowerCase();
-    const displayNameFallback = formatProviderModelOptionName({
-      provider: input.provider,
-      slug: normalizedSlug,
-    });
-    if (dynamicNormalizedSlugs.has(normalizedSlug)) {
-      continue;
-    }
-    dynamicNormalizedSlugs.add(normalizedSlug);
-    normalizedDynamicOptions.push({
-      slug: normalizedSlug,
-      name:
-        staticNameBySlug.get(normalizedSlug) ??
-        (rawName.length > 0 &&
-        rawName.toLowerCase() !== rawSlug &&
-        rawName.toLowerCase() !== normalizedSlug.toLowerCase()
-          ? rawName
-          : displayNameFallback),
-      ...(dynamicModel.upstreamProviderId?.trim()
-        ? { upstreamProviderId: dynamicModel.upstreamProviderId.trim() }
-        : {}),
-      ...(dynamicModel.upstreamProviderName?.trim()
-        ? { upstreamProviderName: dynamicModel.upstreamProviderName.trim() }
-        : {}),
-    });
-  }
-
-  const customOnlyModels = input.staticOptions.filter(
-    (model) => "isCustom" in model && model.isCustom && !dynamicNormalizedSlugs.has(model.slug),
-  );
-  const staticBuiltInModels = input.staticOptions.filter(
-    (model) => !("isCustom" in model) || model.isCustom !== true,
-  );
-  const missingStaticBuiltIns =
-    (input.provider === "kilo" || input.provider === "opencode" || input.provider === "cursor") &&
-    normalizedDynamicOptions.length > 0
-      ? []
-      : staticBuiltInModels.filter((model) => !dynamicNormalizedSlugs.has(model.slug));
-
-  const orderedDynamicOptions =
-    input.provider === "claudeAgent"
-      ? normalizedDynamicOptions.toReversed()
-      : normalizedDynamicOptions;
-
-  return [...orderedDynamicOptions, ...missingStaticBuiltIns, ...customOnlyModels];
-}
-
-function skillMentionPrefix(provider: string): string {
-  if (provider === "pi") return "/skill:";
-  return "/";
-}
-
-const providerMentionReferencesEqual = (
-  left: ReadonlyArray<ProviderMentionReference>,
-  right: ReadonlyArray<ProviderMentionReference>,
-): boolean =>
-  left.length === right.length &&
-  left.every(
-    (mention, index) => mention.path === right[index]?.path && mention.name === right[index]?.name,
-  );
 
 const syncTerminalContextsByIds = (
   contexts: ReadonlyArray<TerminalContextDraft>,
@@ -861,6 +757,7 @@ export default function ChatView({
   const setStoreThreadError = useStore((store) => store.setError);
   const setStoreThreadWorkspace = useStore((store) => store.setThreadWorkspace);
   const { settings } = useAppSettings();
+  const assistantDeliveryMode = resolveAssistantDeliveryMode(settings);
   const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
   const desktopTopBarWindowControlsGutterClassName =
     useDesktopTopBarWindowControlsGutterClassName();
@@ -1106,8 +1003,9 @@ export default function ChatView({
     setIsTraitsPickerOpen(false);
   }, [threadId]);
   useEffect(() => {
+    const scrollDebouncer = showScrollDebouncer.current;
     return () => {
-      showScrollDebouncer.current.cancel();
+      scrollDebouncer.cancel();
       const pendingFrame = pendingInteractionAnchorFrameRef.current;
       if (pendingFrame !== null) {
         window.cancelAnimationFrame(pendingFrame);
@@ -1299,8 +1197,12 @@ export default function ChatView({
   );
   const workspaceContextProjects = useStore((store) => store.projects);
   const homeDir = useWorkspaceStore((state) => state.homeDir);
+  const chatWorkspaceRoot = useWorkspaceStore((state) => state.chatWorkspaceRoot);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const isHomeChatContainer = isHomeChatContainerProject(activeProject, homeDir);
+  const isHomeChatContainer = isHomeChatContainerProject(activeProject, {
+    homeDir,
+    chatWorkspaceRoot,
+  });
   const activeProjectDisplayName = isHomeChatContainer
     ? activeProject?.folderName
     : activeProject?.name;
@@ -1946,16 +1848,7 @@ export default function ChatView({
         result[provider] = mergeDynamicModelOptions({
           provider,
           staticOptions: staticOptions[provider],
-          dynamicModels: dynamicModels.map((model) => ({
-            slug: model.slug,
-            ...(model.name !== undefined ? { name: model.name } : {}),
-            ...(model.upstreamProviderId !== undefined
-              ? { upstreamProviderId: model.upstreamProviderId }
-              : {}),
-            ...(model.upstreamProviderName !== undefined
-              ? { upstreamProviderName: model.upstreamProviderName }
-              : {}),
-          })),
+          dynamicModels,
         });
       }
     }
@@ -2102,10 +1995,9 @@ export default function ChatView({
   );
   const searchableModelOptions = useMemo(
     () =>
-      [...AVAILABLE_PROVIDER_OPTIONS]
-        .sort((left, right) =>
-          compareProvidersByOrder(settings.providerOrder, left.value, right.value),
-        )
+      AVAILABLE_PROVIDER_OPTIONS.toSorted((left, right) =>
+        compareProvidersByOrder(settings.providerOrder, left.value, right.value),
+      )
         .filter((option) => {
           if (lockedProvider !== null) {
             return option.value === lockedProvider;
@@ -2146,13 +2038,34 @@ export default function ChatView({
   );
   const phase = derivePhase(activeThread?.session ?? null);
   const isConnecting = isLocalConnecting || phase === "connecting";
+  // User messages intentionally have no turn id; assistant messages are the stable
+  // bridge for deciding which historical work can fold into visible replies.
+  const workLogVisibleTurnIds = useMemo(() => {
+    const turnIds = new Set<TurnId>();
+    for (const message of activeThread?.messages ?? []) {
+      if (message.turnId) {
+        turnIds.add(message.turnId);
+      }
+    }
+    if (activeLatestTurn?.turnId) {
+      turnIds.add(activeLatestTurn.turnId);
+    }
+    return turnIds;
+  }, [activeLatestTurn?.turnId, activeThread?.messages]);
   const rawWorkLogEntries = useMemo(
-    () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities, WORK_LOG_PRESENTATION_VERSION],
+    () =>
+      deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined, {
+        visibleTurnIds: workLogVisibleTurnIds,
+      }),
+    [activeLatestTurn?.turnId, threadActivities, workLogVisibleTurnIds],
   );
   const activeTurnHasFileChangeWork = useMemo(
-    () => rawWorkLogEntries.some(isProviderFileEditWorkLogEntry),
-    [rawWorkLogEntries],
+    () =>
+      rawWorkLogEntries.some(
+        (entry) =>
+          entry.turnId === activeLatestTurn?.turnId && isProviderFileEditWorkLogEntry(entry),
+      ),
+    [activeLatestTurn?.turnId, rawWorkLogEntries],
   );
   const hasWorkLogSubagents = useMemo(
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
@@ -2726,7 +2639,9 @@ export default function ChatView({
   const isCenteredEmptyLanding =
     timelineEntries.length === 0 && !activeThread?.parentThreadId && !isEditorRail;
   const isEmptyChatLanding =
-    isCenteredEmptyLanding && Boolean(homeDir) && activeProject?.cwd === homeDir;
+    isCenteredEmptyLanding &&
+    Boolean(homeDir) &&
+    isHomeChatContainerProject(activeProject, { homeDir, chatWorkspaceRoot });
   const [workspaceContextsBarOpen, setWorkspaceContextsBarOpen] = useState(true);
   useEffect(() => {
     setWorkspaceContextsBarOpen(isCenteredEmptyLanding);
@@ -2988,27 +2903,23 @@ export default function ChatView({
       interactionMode,
       isSidechat: Boolean(activeThread.sidechatSourceThreadId),
     });
-  const dynamicAgents = useMemo(() => {
-    const query =
-      selectedProvider === "claudeAgent"
-        ? claudeDynamicAgentsQuery
-        : selectedProvider === "kilo"
-          ? kiloDynamicAgentsQuery
-          : selectedProvider === "opencode"
-            ? openCodeDynamicAgentsQuery
-            : codexDynamicAgentsQuery;
-    return (query.data?.agents ?? []).map((a) => ({
-      name: a.name,
-      displayName: a.displayName,
-      ...(a.description ? { description: a.description } : {}),
-    }));
-  }, [
-    selectedProvider,
-    claudeDynamicAgentsQuery.data,
-    codexDynamicAgentsQuery.data,
-    kiloDynamicAgentsQuery.data,
-    openCodeDynamicAgentsQuery.data,
-  ]);
+  const selectedDynamicAgents =
+    selectedProvider === "claudeAgent"
+      ? (claudeDynamicAgentsQuery.data?.agents ?? EMPTY_PROVIDER_AGENTS)
+      : selectedProvider === "kilo"
+        ? (kiloDynamicAgentsQuery.data?.agents ?? EMPTY_PROVIDER_AGENTS)
+        : selectedProvider === "opencode"
+          ? (openCodeDynamicAgentsQuery.data?.agents ?? EMPTY_PROVIDER_AGENTS)
+          : (codexDynamicAgentsQuery.data?.agents ?? EMPTY_PROVIDER_AGENTS);
+  const dynamicAgents = useMemo(
+    () =>
+      selectedDynamicAgents.map((agent) =>
+        agent.description
+          ? { name: agent.name, displayName: agent.displayName, description: agent.description }
+          : { name: agent.name, displayName: agent.displayName },
+      ),
+    [selectedDynamicAgents],
+  );
   const normalComposerMenuItems = useComposerCommandMenuItems({
     composerTrigger: effectiveComposerTrigger,
     provider: selectedProvider,
@@ -3188,17 +3099,14 @@ export default function ChatView({
     () =>
       activeThread
         ? resolveAvailableHandoffTargetProviders(activeThread.modelSelection.provider).filter(
-            (provider) =>
-              isProviderUsable(
-                providerStatuses.find((status) => status.provider === provider) ?? null,
-              ),
+            (provider) => isProviderUsable(findProviderStatus(providerStatuses, provider)),
           )
         : [],
     [activeThread, providerStatuses],
   );
   const handoffActionLabel = activeThread ? "Hand off thread" : "Create handoff thread";
   const activeProviderStatus = useMemo(
-    () => providerStatuses.find((status) => status.provider === selectedProvider) ?? null,
+    () => findProviderStatus(providerStatuses, selectedProvider),
     [selectedProvider, providerStatuses],
   );
   const activeProviderHealthBannerDismissalKey = useMemo(
@@ -3210,25 +3118,7 @@ export default function ChatView({
     dismissedProviderHealthBannerKeys.includes(activeProviderHealthBannerDismissalKey)
       ? null
       : activeProviderStatus;
-  const refreshVoiceStatus = useCallback(() => {
-    const api = readNativeApi();
-    if (!api) return;
-    void api.server
-      .refreshProviders()
-      .then((result) => {
-        queryClient.setQueryData(serverQueryKeys.config(), (current) =>
-          current ? { ...current, providers: result.providers } : current,
-        );
-      })
-      .catch((error) => {
-        toastManager.add({
-          type: "error",
-          title: "Unable to refresh provider status",
-          description:
-            error instanceof Error ? error.message : "Unknown error refreshing provider status.",
-        });
-      });
-  }, [queryClient]);
+  const refreshVoiceStatus = useRefreshProviderStatusesNow();
   const voiceRecordingDurationLabel = useMemo(
     () => formatVoiceRecordingDuration(voiceRecordingDurationMs),
     [voiceRecordingDurationMs],
@@ -4373,7 +4263,6 @@ export default function ChatView({
       setComposerDraftRuntimeMode,
       setDraftThreadContext,
       threadId,
-      toastManager,
     ],
   );
 
@@ -4602,7 +4491,7 @@ export default function ChatView({
   const onMessagesWheelBase = useCallback(() => {
     clearTranscriptAutoFollow();
   }, [clearTranscriptAutoFollow]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const shouldFollowPendingTurn =
       activeThread?.id !== undefined && autoFollowThreadIdRef.current === activeThread.id;
     if (!isAtEndRef.current && !shouldFollowPendingTurn) {
@@ -4616,7 +4505,13 @@ export default function ChatView({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [activeThread?.id, scrollToEnd, transcriptMessageCount, transcriptTailKey]);
+  }, [
+    activeThread?.id,
+    activeTurnInProgress,
+    scrollToEnd,
+    transcriptMessageCount,
+    transcriptTailKey,
+  ]);
   const {
     pendingTranscriptSelectionAction,
     commitTranscriptAssistantSelection,
@@ -4920,9 +4815,10 @@ export default function ChatView({
   ]);
 
   useEffect(() => {
-    updateSelectedComposerSkills((existing) =>
-      filterPromptSkillReferences(prompt, existing, selectedProvider),
-    );
+    updateSelectedComposerSkills((existing) => {
+      const nextSkills = filterPromptSkillReferences(prompt, existing, selectedProvider);
+      return providerSkillReferencesEqual(existing, nextSkills) ? existing : nextSkills;
+    });
   }, [prompt, selectedProvider, updateSelectedComposerSkills]);
 
   useEffect(() => {
@@ -5646,128 +5542,57 @@ export default function ChatView({
   ]);
 
   // --- Composer attachment entry points -------------------------------------
-  const addComposerImages = (files: File[]) => {
-    if (!activeThreadId || files.length === 0) return;
+  const addComposerImages = useCallback(
+    (files: readonly File[]) => {
+      if (!activeThreadId || files.length === 0) return;
 
-    if (pendingUserInputs.length > 0) {
-      toastManager.add({
-        type: "error",
-        title: "Attach images after answering plan questions.",
+      if (pendingUserInputs.length > 0) {
+        toastManager.add({
+          type: "error",
+          title: "Attach images after answering plan questions.",
+        });
+        return;
+      }
+
+      const { images: nextImages, error } = buildComposerImageAttachmentsFromFiles({
+        files,
+        existingAttachmentCount:
+          composerImagesRef.current.length + composerAssistantSelectionsRef.current.length,
       });
-      return;
-    }
 
-    const nextImages: ComposerImageAttachment[] = [];
-    let nextAttachmentCount =
-      composerImagesRef.current.length + composerAssistantSelectionsRef.current.length;
-    let error: string | null = null;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
+      if (nextImages.length === 1 && nextImages[0]) {
+        addComposerImage(nextImages[0]);
+      } else if (nextImages.length > 1) {
+        addComposerImagesToDraft(nextImages);
       }
-      if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
-        continue;
-      }
-      if (nextAttachmentCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} references per message.`;
-        break;
-      }
-
-      const previewUrl = URL.createObjectURL(file);
-      nextImages.push({
-        type: "image",
-        id: randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
-        sizeBytes: file.size,
-        previewUrl,
-        file,
-      });
-      nextAttachmentCount += 1;
-    }
-
-    if (nextImages.length === 1 && nextImages[0]) {
-      addComposerImage(nextImages[0]);
-    } else if (nextImages.length > 1) {
-      addComposerImagesToDraft(nextImages);
-    }
-    setThreadError(activeThreadId, error);
-  };
+      setThreadError(activeThreadId, error);
+    },
+    [
+      activeThreadId,
+      addComposerImage,
+      addComposerImagesToDraft,
+      pendingUserInputs.length,
+      setThreadError,
+    ],
+  );
 
   const removeComposerImage = (imageId: string) => {
     removeComposerImageFromDraft(imageId);
   };
 
-  const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) {
-      return;
-    }
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) {
-      return;
-    }
-    event.preventDefault();
-    addComposerImages(imageFiles);
-  };
-
-  // Image files and dragged file references (from the editor explorer/diff
-  // sidebars) share the same drop affordance.
-  const isComposerHandledDrag = (dataTransfer: DataTransfer) =>
-    dataTransfer.types.includes("Files") ||
-    dataTransfer.types.includes(CHAT_FILE_REFERENCE_DRAG_TYPE);
-
-  const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isComposerHandledDrag(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setIsDragOverComposer(true);
-  };
-
-  const onComposerDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isComposerHandledDrag(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setIsDragOverComposer(true);
-  };
-
-  const onComposerDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isComposerHandledDrag(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
-      return;
-    }
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) {
-      setIsDragOverComposer(false);
-    }
-  };
-
-  const onComposerDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isComposerHandledDrag(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current = 0;
-    setIsDragOverComposer(false);
-    const referenceText = event.dataTransfer.getData(CHAT_FILE_REFERENCE_DRAG_TYPE);
-    if (referenceText) {
-      appendComposerPromptText(threadId, referenceText);
-      return;
-    }
-    const files = Array.from(event.dataTransfer.files);
-    addComposerImages(files);
-    focusComposer();
-  };
+  const {
+    onComposerPaste,
+    onComposerDragEnter,
+    onComposerDragOver,
+    onComposerDragLeave,
+    onComposerDrop,
+  } = useComposerDropzone({
+    addImages: addComposerImages,
+    appendReferenceText: (referenceText) => appendComposerPromptText(threadId, referenceText),
+    dragDepthRef,
+    focusComposer,
+    setIsDragOverComposer,
+  });
 
   const onRevertToTurnCount = useCallback(
     async (turnCount: number) => {
@@ -5817,12 +5642,14 @@ export default function ChatView({
       }
 
       try {
-        const targetStatus =
-          providerStatuses.find((status) => status.provider === targetProvider) ?? null;
-        if (!isProviderUsable(targetStatus)) {
+        const targetAvailability = resolveProviderSendAvailability({
+          provider: targetProvider,
+          statuses: providerStatuses,
+        });
+        if (!targetAvailability.usable) {
           toastManager.add({
             type: "error",
-            title: providerUnavailableReason(targetStatus),
+            title: targetAvailability.unavailableReason,
           });
           return;
         }
@@ -5861,7 +5688,7 @@ export default function ChatView({
       }
       const nextPrompt = queuedTurn.kind === "chat" ? queuedTurn.prompt : queuedTurn.text;
       const restoredImages =
-        queuedTurn.kind === "chat" ? queuedTurn.images.map(cloneComposerImageForRetry) : [];
+        queuedTurn.kind === "chat" ? queuedTurn.images.map(cloneComposerImageAttachment) : [];
       const restoredAssistantSelections =
         queuedTurn.kind === "chat" ? queuedTurn.assistantSelections : [];
       promptRef.current = nextPrompt;
@@ -6062,14 +5889,14 @@ export default function ChatView({
       return false;
     }
     if (!activeProject) return false;
-    const sendProviderStatus =
-      providerStatuses.find(
-        (status) => status.provider === selectedModelSelectionForSend.provider,
-      ) ?? null;
-    if (!isProviderUsable(sendProviderStatus)) {
+    const sendProviderAvailability = resolveProviderSendAvailability({
+      provider: selectedModelSelectionForSend.provider,
+      statuses: providerStatuses,
+    });
+    if (!sendProviderAvailability.usable) {
       toastManager.add({
         type: "error",
-        title: providerUnavailableReason(sendProviderStatus),
+        title: sendProviderAvailability.unavailableReason,
       });
       return false;
     }
@@ -6161,12 +5988,35 @@ export default function ChatView({
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || !hasNativeUserMessages;
+    const firstSendCreatedAt = new Date();
+    let firstComposerImageNameForTitle: string | null = null;
+    if (composerImagesForSend.length > 0) {
+      firstComposerImageNameForTitle = composerImagesForSend[0]?.name ?? null;
+    }
+    let titleSeed = trimmed;
+    if (!titleSeed) {
+      if (firstComposerImageNameForTitle) {
+        titleSeed = `Image: ${firstComposerImageNameForTitle}`;
+      } else if (composerAssistantSelectionsForSend.length > 0) {
+        titleSeed = formatAssistantSelectionTitleSeed(composerAssistantSelectionsForSend.length);
+      } else if (sendableComposerTerminalContexts.length > 0) {
+        titleSeed = formatTerminalContextLabel(sendableComposerTerminalContexts[0]!);
+      } else {
+        titleSeed = GENERIC_CHAT_THREAD_TITLE;
+      }
+    }
+    // Keep the optimistic label short while the server asks Codex for a better summary.
+    const title = buildPromptThreadTitleFallback(titleSeed);
     const firstSendTarget = resolveFirstSendTarget({
       activeProject,
+      chatWorkspaceRoot,
+      createdAt: firstSendCreatedAt,
       isFirstMessage,
       isHomeChatContainer,
       projects: useStore.getState().projects,
       selectedWorkspaceRoot: isHomeChatContainer ? (resolvedThreadWorktreePath ?? null) : null,
+      title,
+      titleSeed,
     });
     let {
       targetProjectId: targetProjectIdForSend,
@@ -6191,20 +6041,21 @@ export default function ChatView({
     if (isFirstMessage && isHomeChatContainer && firstSendTarget.kind !== "current") {
       if (firstSendTarget.kind === "create-project") {
         const projectId = newProjectId();
-        const createdAt = new Date().toISOString();
+        const createdAt = firstSendCreatedAt.toISOString();
         try {
           await api.orchestration.dispatchCommand({
             type: "project.create",
             commandId: newCommandId(),
             projectId,
-            kind: "project",
+            kind: firstSendTarget.creation.kind,
             title: firstSendTarget.creation.title,
             workspaceRoot: firstSendTarget.creation.workspaceRoot,
+            createWorkspaceRootIfMissing: firstSendTarget.creation.createWorkspaceRootIfMissing,
             defaultModelSelection: firstSendTarget.creation.defaultModelSelection,
             createdAt,
           });
           targetProjectIdForSend = projectId;
-          targetProjectKindForSend = "project";
+          targetProjectKindForSend = firstSendTarget.creation.kind;
           targetProjectCwdForSend = firstSendTarget.creation.workspaceRoot;
           targetProjectScriptsForSend = [];
           targetProjectDefaultModelSelectionForSend =
@@ -6229,9 +6080,12 @@ export default function ChatView({
 
           syncServerShellSnapshot(snapshot);
           targetProjectIdForSend = recoveredProject.id;
-          targetProjectKindForSend = "project";
+          targetProjectKindForSend = recoveredProject.kind ?? firstSendTarget.creation.kind;
           targetProjectCwdForSend = recoveredProject.workspaceRoot;
-          targetProjectScriptsForSend = [...recoveredProject.scripts];
+          targetProjectScriptsForSend =
+            (recoveredProject.kind ?? firstSendTarget.creation.kind) === "project"
+              ? [...recoveredProject.scripts]
+              : [];
           targetProjectDefaultModelSelectionForSend =
             recoveredProject.defaultModelSelection ??
             firstSendTarget.creation.defaultModelSelection;
@@ -6281,7 +6135,7 @@ export default function ChatView({
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
-    const outgoingMessageText = formatOutgoingPrompt({
+    const outgoingMessageText = formatOutgoingComposerPrompt({
       provider: selectedProviderForSend,
       model: selectedModelForSend,
       effort: selectedPromptEffortForSend,
@@ -6296,22 +6150,10 @@ export default function ChatView({
       outgoingMessageText,
       selectedComposerMentionsForSend,
     );
-    const turnAttachmentsPromise = Promise.all([
-      ...composerAssistantSelectionsSnapshot.map((selection) =>
-        Promise.resolve({
-          type: "assistant-selection" as const,
-          assistantMessageId: MessageId.makeUnsafe(selection.assistantMessageId),
-          text: selection.text,
-        }),
-      ),
-      ...composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
-      })),
-    ]);
+    const turnAttachmentsPromise = buildUploadComposerAttachments({
+      images: composerImagesSnapshot,
+      assistantSelections: composerAssistantSelectionsSnapshot,
+    });
     const optimisticAttachments = [
       ...composerAssistantSelectionsSnapshot,
       ...composerImagesSnapshot.map((image) => ({
@@ -6401,27 +6243,6 @@ export default function ChatView({
         }
       }
 
-      let firstComposerImageName: string | null = null;
-      if (composerImagesSnapshot.length > 0) {
-        const firstComposerImage = composerImagesSnapshot[0];
-        if (firstComposerImage) {
-          firstComposerImageName = firstComposerImage.name;
-        }
-      }
-      let titleSeed = trimmed;
-      if (!titleSeed) {
-        if (firstComposerImageName) {
-          titleSeed = `Image: ${firstComposerImageName}`;
-        } else if (composerAssistantSelectionsSnapshot.length > 0) {
-          titleSeed = formatAssistantSelectionTitleSeed(composerAssistantSelectionsSnapshot.length);
-        } else if (composerTerminalContextsSnapshot.length > 0) {
-          titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
-        } else {
-          titleSeed = GENERIC_CHAT_THREAD_TITLE;
-        }
-      }
-      // Keep the optimistic label short while the server asks Codex for a better summary.
-      const title = buildPromptThreadTitleFallback(titleSeed);
       const threadCreateModelSelection: ModelSelection = buildModelSelection(
         selectedProviderForSend,
         selectedModelSelectionForSend.provider === selectedProviderForSend
@@ -6524,7 +6345,7 @@ export default function ChatView({
         ...(providerOptionsForDispatchForSend
           ? { providerOptions: providerOptionsForDispatchForSend }
           : {}),
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode,
         dispatchMode,
         runtimeMode: nextRuntimeModeForSend,
         interactionMode: interactionModeForSend,
@@ -6560,7 +6381,7 @@ export default function ChatView({
         promptRef.current = promptForSend;
         setPrompt(promptForSend);
         setComposerCursor(collapseExpandedComposerCursor(promptForSend, promptForSend.length));
-        addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
+        addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageAttachment));
         for (const selection of composerAssistantSelectionsSnapshot) {
           addComposerAssistantSelectionToDraft(selection);
         }
@@ -6825,7 +6646,7 @@ export default function ChatView({
     const threadIdForSend = activeThread.id;
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
-    const outgoingMessageText = formatOutgoingPrompt({
+    const outgoingMessageText = formatOutgoingComposerPrompt({
       provider: queuedTurn?.selectedProvider ?? selectedProvider,
       model: queuedTurn?.selectedModel ?? selectedModel,
       effort: queuedTurn?.selectedPromptEffort ?? selectedPromptEffort,
@@ -6886,7 +6707,7 @@ export default function ChatView({
               providerOptions: providerOptionsForPlanDispatch,
             }
           : {}),
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode,
         dispatchMode,
         runtimeMode: queuedTurn?.runtimeMode ?? runtimeMode,
         interactionMode: nextInteractionMode,
@@ -6958,7 +6779,7 @@ export default function ChatView({
         editedPrompt: text,
         originalPrompt: originalMessage.text,
       });
-      const outgoingMessageText = formatOutgoingPrompt({
+      const outgoingMessageText = formatOutgoingComposerPrompt({
         provider: selectedProvider,
         model: selectedModel,
         effort: selectedPromptEffort,
@@ -6980,7 +6801,7 @@ export default function ChatView({
           text: outgoingMessageText,
           modelSelection: selectedModelSelection,
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode,
           runtimeMode,
           interactionMode,
           createdAt: messageCreatedAt,
@@ -7011,7 +6832,7 @@ export default function ChatView({
       selectedPromptEffort,
       selectedProvider,
       setThreadError,
-      settings.enableAssistantStreaming,
+      assistantDeliveryMode,
     ],
   );
 
@@ -7127,7 +6948,7 @@ export default function ChatView({
     const nextThreadId = newThreadId();
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
-    const outgoingImplementationPrompt = formatOutgoingPrompt({
+    const outgoingImplementationPrompt = formatOutgoingComposerPrompt({
       provider: selectedProvider,
       model: selectedModel,
       effort: selectedPromptEffort,
@@ -7182,7 +7003,7 @@ export default function ChatView({
           },
           modelSelection: selectedModelSelection,
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode,
           dispatchMode: "queue",
           runtimeMode,
           interactionMode: "default",
@@ -7238,7 +7059,7 @@ export default function ChatView({
     providerOptionsForDispatch,
     rememberCustomBinaryPathForDispatch,
     selectedProvider,
-    settings.enableAssistantStreaming,
+    assistantDeliveryMode,
     syncServerShellSnapshot,
     selectedModel,
   ]);
@@ -9020,8 +8841,12 @@ export default function ChatView({
           "flex items-center",
           isEditorRail ? "h-10" : CHAT_SURFACE_HEADER_HEIGHT_CLASS,
           isElectron && "drag-region",
-          desktopTopBarTrafficLightGutterClassName,
-          desktopTopBarWindowControlsGutterClassName,
+          // The editor-rail chat header sits in the editor's second row (inside the
+          // right-side chat pane), not flush against the window edges — the editor's
+          // own top bar already reserves both desktop window-control gutters. Applying
+          // them here just leaves redundant empty space on the sides.
+          !isEditorRail && desktopTopBarTrafficLightGutterClassName,
+          !isEditorRail && desktopTopBarWindowControlsGutterClassName,
         )}
       >
         <ChatHeader
