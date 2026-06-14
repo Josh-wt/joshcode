@@ -713,6 +713,7 @@ function createSnapshotWithSettledPlanAwaitingFollowUp(): OrchestrationReadModel
         ? {
             ...thread,
             interactionMode: "plan",
+            hasActionableProposedPlan: true,
             proposedPlans: [
               {
                 id: "plan-awaiting-follow-up",
@@ -1098,6 +1099,17 @@ function dispatchConfiguredShortcut(
       cancelable: true,
     }),
   );
+}
+
+function dispatchComposerFocusToggleShortcut(): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", {
+    key: "l",
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
 }
 
 // The composer model/effort shortcuts both drop into the same combined picker,
@@ -2034,6 +2046,42 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("toggles composer focus with Cmd+L", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-composer-focus-shortcut" as MessageId,
+        targetText: "composer focus shortcut",
+      }),
+    });
+    const focusTarget = document.createElement("button");
+    focusTarget.type = "button";
+    focusTarget.textContent = "Focus sink";
+    document.body.appendChild(focusTarget);
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      focusTarget.focus();
+      expect(document.activeElement).toBe(focusTarget);
+
+      const focusEvent = dispatchComposerFocusToggleShortcut();
+      expect(focusEvent.defaultPrevented).toBe(true);
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(composerEditor);
+      });
+
+      const blurEvent = dispatchComposerFocusToggleShortcut();
+      expect(blurEvent.defaultPrevented).toBe(true);
+      await vi.waitFor(() => {
+        expect(document.activeElement).not.toBe(composerEditor);
+      });
+    } finally {
+      focusTarget.remove();
+      await mounted.cleanup();
+    }
+  });
+
   it("opens the composer model picker surface", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -2427,6 +2475,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         images: [queuedImage],
         assistantSelections: [],
         terminalContexts: [],
+        fileComments: [],
         skills: [],
         mentions: [],
         selectedProvider: "codex",
@@ -2449,6 +2498,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         images: [],
         assistantSelections: [],
         terminalContexts: [],
+        fileComments: [],
         skills: [],
         mentions: [],
         selectedProvider: "codex",
@@ -2537,6 +2587,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         images: [],
         assistantSelections: [],
         terminalContexts: [],
+        fileComments: [],
         skills: [],
         mentions: [],
         selectedProvider: "codex",
@@ -2614,6 +2665,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         images: [queuedImage],
         assistantSelections: [],
         terminalContexts: [],
+        fileComments: [],
         skills: [],
         mentions: [],
         selectedProvider: "codex",
@@ -3199,6 +3251,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           persistedAttachments: [],
           assistantSelections: [],
           terminalContexts: [],
+          fileComments: [],
           skills: [],
           mentions: [],
           queuedTurns: [],
@@ -3330,6 +3383,37 @@ describe("ChatView timeline estimator parity (full app)", () => {
           "plan",
         );
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("distinguishes plan mode from the plan details sidebar button", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithSettledPlanAwaitingFollowUp(),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const footer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
+        "Unable to find composer footer.",
+      );
+
+      await vi.waitFor(() => {
+        const buttonLabels = Array.from(footer.querySelectorAll("button"))
+          .map((button) => button.textContent?.trim() ?? "")
+          .filter(Boolean);
+
+        expect(buttonLabels.filter((label) => label === "Plan")).toHaveLength(1);
+        expect(buttonLabels).toContain("Plan details");
+        expect(document.querySelector('button[title="Show plan sidebar"]')).toBeNull();
+      });
+      await expect
+        .element(page.getByTitle("Plan mode — click to return to normal build mode"))
+        .toBeInTheDocument();
+      await expect.element(page.getByLabelText("Show plan details sidebar")).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

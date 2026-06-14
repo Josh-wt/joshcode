@@ -57,6 +57,8 @@ export interface ProviderAdapterCapabilities {
   readonly supportsRuntimeModelList?: boolean;
   readonly supportsTurnSteering?: boolean;
   readonly workspaceContexts?: ProviderWorkspaceContextMode;
+  /** True when `turn.diff.updated.payload.unifiedDiff` contains a parseable live patch. */
+  readonly supportsLiveTurnDiffPatch?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

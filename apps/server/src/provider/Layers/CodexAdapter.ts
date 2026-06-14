@@ -2015,6 +2015,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         supportsPluginDiscovery: true,
         supportsRuntimeModelList: true,
         supportsTurnSteering: true,
+        supportsLiveTurnDiffPatch: true,
       },
       startSession,
       sendTurn,

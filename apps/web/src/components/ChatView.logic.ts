@@ -19,6 +19,7 @@ import {
   type SessionPhase,
   type Thread,
   type ThreadPrimarySurface,
+  type TurnDiffSummary,
 } from "../types";
 import { type DraftThreadState } from "../composerDraftStore";
 import { Schema } from "effect";
@@ -97,6 +98,27 @@ export function resolveEnvironmentPanelVisible(input: {
   environmentPanelOpen: boolean;
 }): boolean {
   return input.environmentEnabled && input.environmentPanelOpen;
+}
+
+export function resolveActiveTurnLiveDiffState(input: {
+  latestTurnId: string | null | undefined;
+  turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
+}): {
+  turnId: TurnDiffSummary["turnId"] | null;
+  fileCount: number;
+  additions: number;
+  deletions: number;
+} {
+  const summary = input.latestTurnId
+    ? (input.turnDiffSummaries.find((entry) => entry.turnId === input.latestTurnId) ?? null)
+    : null;
+  const files = summary?.files ?? [];
+  return {
+    turnId: summary?.turnId ?? null,
+    fileCount: files.length,
+    additions: files.reduce((total, file) => total + (file.additions ?? 0), 0),
+    deletions: files.reduce((total, file) => total + (file.deletions ?? 0), 0),
+  };
 }
 
 export function buildLocalDraftThread(
@@ -448,6 +470,7 @@ export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   assistantSelectionCount: number;
+  fileCommentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
 }): {
   trimmedPrompt: string;
@@ -467,6 +490,7 @@ export function deriveComposerSendState(options: {
       trimmedPrompt.length > 0 ||
       options.imageCount > 0 ||
       options.assistantSelectionCount > 0 ||
+      options.fileCommentCount > 0 ||
       sendableTerminalContexts.length > 0,
   };
 }
@@ -561,8 +585,15 @@ export interface ThreadBreadcrumb {
   title: string;
 }
 
+type ThreadBreadcrumbSource = Pick<
+  Thread,
+  "id" | "title" | "parentThreadId" | "subagentAgentId" | "subagentNickname" | "subagentRole"
+> & {
+  activities?: Thread["activities"];
+};
+
 export function buildThreadBreadcrumbs(
-  threads: ReadonlyArray<Thread>,
+  threads: ReadonlyArray<ThreadBreadcrumbSource>,
   thread: Pick<Thread, "id" | "parentThreadId"> | null | undefined,
 ): ThreadBreadcrumb[] {
   if (!thread?.parentThreadId) {

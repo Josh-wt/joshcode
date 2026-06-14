@@ -31,6 +31,7 @@ import {
   resolveTailUserMessageEditTarget,
 } from "@t3tools/shared/conversationEdit";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { buildStalePendingRequestFailureDetail } from "@t3tools/shared/threadSummary";
 import {
   resolveThreadWorkspaceCwds,
   resolveThreadWorkspaceState,
@@ -252,13 +253,6 @@ function isRollbackStillInProgressError(error: unknown): boolean {
       normalized.includes("turn in progress") ||
       normalized.includes("active turn"))
   );
-}
-
-function stalePendingRequestDetail(
-  requestKind: "approval" | "user-input",
-  requestId: string,
-): string {
-  return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
 }
 
 function buildGeneratedWorktreeBranchName(raw: string): string {
@@ -1549,7 +1543,6 @@ const make = Effect.gen(function* () {
         ? "queue"
         : event.payload.dispatchMode;
     const editResendKey = editResendTurnStartKey(event.payload.threadId, event.payload.messageId);
-    const isEditResendTurn = editResendTurnStartKeys.has(editResendKey);
 
     yield* dispatchTurnForThread({
       threadId: event.payload.threadId,
@@ -1683,12 +1676,11 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.approval-response-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
-    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
-    if (!thread || !providerThread) {
+    if (!thread) {
       return;
     }
-    const hasSession = providerThread.session && providerThread.session.status !== "stopped";
-    if (!hasSession) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    if (providerThread?.session?.status === "stopped") {
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.approval.respond.failed",
@@ -1699,10 +1691,11 @@ const make = Effect.gen(function* () {
         requestId: event.payload.requestId,
       });
     }
+    const providerThreadId = providerThread?.id ?? event.payload.threadId;
 
     yield* providerService
       .respondToRequest({
-        threadId: providerThread.id,
+        threadId: providerThreadId,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
       })
@@ -1714,7 +1707,7 @@ const make = Effect.gen(function* () {
               kind: "provider.approval.respond.failed",
               summary: "Provider approval response failed",
               detail: isUnknownPendingApprovalRequestError(cause)
-                ? stalePendingRequestDetail("approval", event.payload.requestId)
+                ? buildStalePendingRequestFailureDetail("approval", event.payload.requestId)
                 : Cause.pretty(cause),
               turnId: null,
               createdAt: event.payload.createdAt,
@@ -1731,12 +1724,11 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.user-input-response-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
-    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
-    if (!thread || !providerThread) {
+    if (!thread) {
       return;
     }
-    const hasSession = providerThread.session && providerThread.session.status !== "stopped";
-    if (!hasSession) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    if (providerThread?.session?.status === "stopped") {
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.user-input.respond.failed",
@@ -1747,10 +1739,11 @@ const make = Effect.gen(function* () {
         requestId: event.payload.requestId,
       });
     }
+    const providerThreadId = providerThread?.id ?? event.payload.threadId;
 
     yield* providerService
       .respondToUserInput({
-        threadId: providerThread.id,
+        threadId: providerThreadId,
         requestId: event.payload.requestId,
         answers: event.payload.answers,
       })
@@ -1761,7 +1754,7 @@ const make = Effect.gen(function* () {
             kind: "provider.user-input.respond.failed",
             summary: "Provider user input response failed",
             detail: isUnknownPendingUserInputRequestError(cause)
-              ? stalePendingRequestDetail("user-input", event.payload.requestId)
+              ? buildStalePendingRequestFailureDetail("user-input", event.payload.requestId)
               : Cause.pretty(cause),
             turnId: null,
             createdAt: event.payload.createdAt,

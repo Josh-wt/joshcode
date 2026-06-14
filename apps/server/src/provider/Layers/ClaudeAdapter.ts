@@ -3871,6 +3871,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         supportsPluginMentions: false,
         supportsPluginDiscovery: false,
         supportsRuntimeModelList: true,
+        supportsLiveTurnDiffPatch: false,
       },
       startSession,
       sendTurn,

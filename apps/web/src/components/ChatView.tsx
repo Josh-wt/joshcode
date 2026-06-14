@@ -129,6 +129,7 @@ import {
   buildThreadBreadcrumbs,
   enrichSubagentWorkEntries,
   resolveActiveThreadTitle,
+  resolveActiveTurnLiveDiffState,
   resolveCommittedProviderModel,
   resolveDefaultEnvironmentPanelOpen,
   resolveEnvironmentPanelVisible,
@@ -176,9 +177,9 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
+  buildSourceProposedPlanReference,
   hasActionableProposedPlan,
   hasLiveTurnTailWork,
-  isProviderFileEditWorkLogEntry,
   isLatestTurnSettled,
   type ActiveTaskListState,
 } from "../session-logic";
@@ -234,6 +235,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ComposerSendArrowIcon,
+  LayoutSidebarIcon,
   RefreshCwIcon,
   XIcon,
 } from "~/lib/icons";
@@ -304,6 +306,12 @@ import {
   formatAssistantSelectionQueuePreview,
   formatAssistantSelectionTitleSeed,
 } from "../lib/assistantSelections";
+import {
+  appendFileCommentsToPrompt,
+  formatFileCommentLabel,
+  formatFileCommentTitleSeed,
+  type FileCommentDraft,
+} from "../lib/fileComments";
 import {
   deriveContextWindowSelectionStatus,
   deriveCumulativeCostUsd,
@@ -618,6 +626,7 @@ function buildQueuedComposerPreviewText(input: {
   images: ReadonlyArray<ComposerImageAttachment>;
   assistantSelections: ReadonlyArray<{ id: string }>;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  fileComments: ReadonlyArray<FileCommentDraft>;
 }): string {
   if (input.trimmedPrompt.length > 0) {
     return input.trimmedPrompt;
@@ -632,6 +641,10 @@ function buildQueuedComposerPreviewText(input: {
   const firstTerminalContext = input.terminalContexts[0];
   if (firstTerminalContext) {
     return formatTerminalContextLabel(firstTerminalContext);
+  }
+  const firstFileComment = input.fileComments[0];
+  if (firstFileComment) {
+    return formatFileCommentLabel(firstFileComment);
   }
   return "Queued follow-up";
 }
@@ -781,6 +794,7 @@ export default function ChatView({
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const composerAssistantSelections = composerDraft.assistantSelections;
+  const composerFileComments = composerDraft.fileComments;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerSkills = composerDraft.skills;
   const composerMentions = composerDraft.mentions;
@@ -800,9 +814,16 @@ export default function ChatView({
         prompt,
         imageCount: composerImages.length,
         assistantSelectionCount: composerAssistantSelections.length,
+        fileCommentCount: composerFileComments.length,
         terminalContexts: composerTerminalContexts,
       }),
-    [composerAssistantSelections.length, composerImages.length, composerTerminalContexts, prompt],
+    [
+      composerAssistantSelections.length,
+      composerFileComments.length,
+      composerImages.length,
+      composerTerminalContexts,
+      prompt,
+    ],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -828,6 +849,8 @@ export default function ChatView({
   const clearComposerDraftAssistantSelections = useComposerDraftStore(
     (store) => store.clearAssistantSelections,
   );
+  const addComposerDraftFileComment = useComposerDraftStore((store) => store.addFileComment);
+  const clearComposerDraftFileComments = useComposerDraftStore((store) => store.clearFileComments);
   const insertComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.insertTerminalContext,
   );
@@ -876,6 +899,7 @@ export default function ChatView({
     composerAssistantSelections,
   );
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
+  const composerFileCommentsRef = useRef<FileCommentDraft[]>(composerFileComments);
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
     Record<ThreadId, string | null>
   >({});
@@ -1093,6 +1117,12 @@ export default function ChatView({
     },
     [addComposerDraftTerminalContexts, threadId],
   );
+  const addComposerFileCommentToDraft = useCallback(
+    (comment: FileCommentDraft) => {
+      addComposerDraftFileComment(threadId, comment);
+    },
+    [addComposerDraftFileComment, threadId],
+  );
   const removeComposerImageFromDraft = useCallback(
     (imageId: string) => {
       removeComposerDraftImage(threadId, imageId);
@@ -1102,6 +1132,9 @@ export default function ChatView({
   const clearComposerAssistantSelectionsFromDraft = useCallback(() => {
     clearComposerDraftAssistantSelections(threadId);
   }, [clearComposerDraftAssistantSelections, threadId]);
+  const clearComposerFileCommentsFromDraft = useCallback(() => {
+    clearComposerDraftFileComments(threadId);
+  }, [clearComposerDraftFileComments, threadId]);
   const removeComposerTerminalContextFromDraft = useCallback(
     (contextId: string) => {
       const contextIndex = composerTerminalContexts.findIndex(
@@ -1188,8 +1221,8 @@ export default function ChatView({
   const latestTurnSettled = latestTurnSettledByProvider && !hasLiveTurnTail;
   // `latestTurnSettled` is also false when there is NO started turn (a brand-new
   // chat), because `isLatestTurnSettled` treats a non-existent turn as unsettled.
-  // Gate "live turn" UI on an actually-started turn so the working-tree diff strip
-  // doesn't leak onto a fresh chat just because the repo happens to be dirty.
+  // Gate live-turn UI on an actually-started turn so composer chrome cannot
+  // appear on a fresh chat just because the repo already has local edits.
   const latestTurnLive = Boolean(activeLatestTurn?.startedAt) && !latestTurnSettled;
   const activeProjectId = activeThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = useStore(
@@ -1663,6 +1696,7 @@ export default function ChatView({
   const featureFlags = useFeatureFlags();
   const showExpandedCursorModelVariants = featureFlags["show-expanded-cursor-model-variants"];
   const showDebugTaskBanner = import.meta.env.DEV && featureFlags["show-debug-task-banner"];
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const composerModelHintByProvider = useMemo<Record<ProviderKind, string | null>>(() => {
     const threadModelSelection = activeThread?.modelSelection ?? null;
     const projectModelSelection = activeProject?.defaultModelSelection ?? null;
@@ -1688,6 +1722,11 @@ export default function ChatView({
     activeThread?.modelSelection,
     composerDraft.modelSelectionByProvider,
   ]);
+  const providerModelDiscoveryCwd = resolveProviderDiscoveryCwd({
+    activeThreadWorktreePath: resolvedThreadWorktreePath,
+    activeProjectCwd: activeProject?.cwd ?? null,
+    serverCwd: serverConfigQuery.data?.cwd ?? null,
+  });
   const claudeDynamicModelsQuery = useQuery(
     providerModelsQueryOptions({ provider: "claudeAgent" }),
   );
@@ -1696,6 +1735,8 @@ export default function ChatView({
     selectedProvider === "opencode" || lockedProvider === "opencode" || isModelPickerOpen;
   const kiloModelDiscoveryEnabled =
     selectedProvider === "kilo" || lockedProvider === "kilo" || isModelPickerOpen;
+  const piModelDiscoveryEnabled =
+    selectedProvider === "pi" || lockedProvider === "pi" || isModelPickerOpen;
   const cursorDynamicModelsQuery = useQuery(
     providerModelsQueryOptions({
       provider: "cursor",
@@ -1737,7 +1778,8 @@ export default function ChatView({
       provider: "pi",
       binaryPath: settings.piBinaryPath || null,
       agentDir: settings.piAgentDir || null,
-      enabled: selectedProvider === "pi" || lockedProvider === "pi" || isModelPickerOpen,
+      cwd: providerModelDiscoveryCwd,
+      enabled: piModelDiscoveryEnabled,
     }),
   );
   const claudeDynamicAgentsQuery = useQuery(
@@ -1775,6 +1817,13 @@ export default function ChatView({
     kiloModelDiscoveryEnabled &&
     !hasResolvedKiloModelDiscovery &&
     (kiloDynamicModelsQuery.isLoading || kiloDynamicModelsQuery.isFetching);
+  const hasResolvedPiModelDiscovery =
+    piDynamicModelsQuery.data?.source?.startsWith("pi.sdk") === true &&
+    (piDynamicModelsQuery.data.models.length ?? 0) > 0;
+  const piModelDiscoveryPending =
+    piModelDiscoveryEnabled &&
+    !hasResolvedPiModelDiscovery &&
+    (piDynamicModelsQuery.isLoading || piDynamicModelsQuery.isFetching);
   const modelOptionsByProvider = useMemo(() => {
     const staticOptions: Record<ProviderKind, ReturnType<typeof getAppModelOptions>> = {
       codex: getAppModelOptions(
@@ -1969,18 +2018,22 @@ export default function ChatView({
       ? cursorModelDiscoveryPending
       : selectedProvider === "kilo"
         ? kiloModelDiscoveryPending
-        : selectedProviderModelsQuery !== undefined &&
-          (selectedProviderModelsQuery.isLoading ||
-            (selectedProviderModelsQuery.isFetching &&
-              selectedProviderModelsQuery.data === undefined));
+        : selectedProvider === "pi"
+          ? piModelDiscoveryPending
+          : selectedProviderModelsQuery !== undefined &&
+            (selectedProviderModelsQuery.isLoading ||
+              (selectedProviderModelsQuery.isFetching &&
+                selectedProviderModelsQuery.data === undefined));
   const selectedProviderRequiresRuntimeModels =
-    selectedProvider === "cursor" || selectedProvider === "kilo";
+    selectedProvider === "cursor" || selectedProvider === "kilo" || selectedProvider === "pi";
   const selectedProviderRuntimeModelDiscoveryPending =
     selectedProvider === "cursor"
       ? cursorModelDiscoveryPending
       : selectedProvider === "kilo"
         ? kiloModelDiscoveryPending
-        : false;
+        : selectedProvider === "pi"
+          ? piModelDiscoveryPending
+          : false;
   const showComposerModelBootstrapSkeleton = shouldShowComposerModelBootstrapSkeleton({
     selectedProvider,
     selectedModel,
@@ -2058,14 +2111,6 @@ export default function ChatView({
         visibleTurnIds: workLogVisibleTurnIds,
       }),
     [activeLatestTurn?.turnId, threadActivities, workLogVisibleTurnIds],
-  );
-  const activeTurnHasFileChangeWork = useMemo(
-    () =>
-      rawWorkLogEntries.some(
-        (entry) =>
-          entry.turnId === activeLatestTurn?.turnId && isProviderFileEditWorkLogEntry(entry),
-      ),
-    [activeLatestTurn?.turnId, rawWorkLogEntries],
   );
   const hasWorkLogSubagents = useMemo(
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
@@ -2204,7 +2249,9 @@ export default function ChatView({
       sidebarPlanSourceThreadProposedPlans,
     ],
   );
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
+  const planSidebarLabel = sidebarProposedPlan ? "Plan details" : "Tasks";
+  const planSidebarToggleLabel = planSidebarOpen ? `Hide ${planSidebarLabel}` : planSidebarLabel;
+  const planSidebarToggleTitle = `${planSidebarOpen ? "Hide" : "Show"} ${planSidebarLabel.toLowerCase()} sidebar`;
   const [activeTaskListCardHeight, setActiveTaskListCardHeight] = useState(0);
   const activeTaskListCardRef = useRef<HTMLDivElement | null>(null);
   const previousActiveTaskListCardHeightRef = useRef(0);
@@ -2719,7 +2766,6 @@ export default function ChatView({
   const isMentionTrigger = composerTriggerKind === "mention";
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   const branchesQuery = useQuery(gitBranchesQueryOptions(gitBranchSourceCwd));
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const localFolderBrowseRootPath = getLocalFolderBrowseRootPath(
     serverConfigQuery.data?.homeDir ?? null,
     isMacPlatform(platform),
@@ -2735,11 +2781,7 @@ export default function ChatView({
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
   const effectiveMentionQuery = mentionTriggerQuery.length > 0 ? debouncedPathQuery : "";
-  const composerSkillCwd = resolveProviderDiscoveryCwd({
-    activeThreadWorktreePath: resolvedThreadWorktreePath,
-    activeProjectCwd: activeProject?.cwd ?? null,
-    serverCwd: serverConfigQuery.data?.cwd ?? null,
-  });
+  const composerSkillCwd = providerModelDiscoveryCwd;
   const providerComposerCapabilitiesQuery = useQuery(
     providerComposerCapabilitiesQueryOptions(selectedProvider),
   );
@@ -3159,6 +3201,16 @@ export default function ChatView({
     isGitRepo,
     refetchInterval: repoDiffBadgeRefreshIntervalMs,
   });
+  // The composer live strip is turn-scoped; repoDiffTotals can include unrelated
+  // local edits that existed before the active agent turn started.
+  const activeTurnLiveDiffState = useMemo(
+    () =>
+      resolveActiveTurnLiveDiffState({
+        latestTurnId: activeLatestTurn?.turnId ?? null,
+        turnDiffSummaries,
+      }),
+    [activeLatestTurn?.turnId, turnDiffSummaries],
+  );
   const splitTerminalShortcutLabel = useMemo(
     () =>
       shortcutLabelForCommand(keybindings, "terminal.splitRight") ??
@@ -3394,6 +3446,15 @@ export default function ChatView({
     pendingComposerFocusRef.current = false;
     editor.focusAtEnd();
   }, [secondaryChromeReady]);
+  const toggleComposerFocus = useCallback(() => {
+    const editor = composerEditorRef.current;
+    if (secondaryChromeReady && editor?.isFocused()) {
+      pendingComposerFocusRef.current = false;
+      editor.blur();
+      return;
+    }
+    focusComposer();
+  }, [focusComposer, secondaryChromeReady]);
   const scheduleComposerFocus = useCallback(() => {
     pendingComposerFocusRef.current = true;
     window.requestAnimationFrame(() => {
@@ -4273,12 +4334,34 @@ export default function ChatView({
       if (isLocalDraftThread) {
         setDraftThreadContext(threadId, { interactionMode: mode });
       }
+      if (serverThread) {
+        const api = readNativeApi();
+        if (api) {
+          void api.orchestration
+            .dispatchCommand({
+              type: "thread.interaction-mode.set",
+              commandId: newCommandId(),
+              threadId,
+              interactionMode: mode,
+              createdAt: new Date().toISOString(),
+            })
+            .catch((error) => {
+              toastManager.add({
+                type: "error",
+                title: "Could not update plan mode",
+                description:
+                  error instanceof Error ? error.message : "An unexpected error occurred.",
+              });
+            });
+        }
+      }
       scheduleComposerFocus();
     },
     [
       interactionMode,
       isLocalDraftThread,
       scheduleComposerFocus,
+      serverThread,
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       threadId,
@@ -4763,6 +4846,10 @@ export default function ChatView({
   }, [composerTerminalContexts]);
 
   useEffect(() => {
+    composerFileCommentsRef.current = composerFileComments;
+  }, [composerFileComments]);
+
+  useEffect(() => {
     queuedComposerTurnsRef.current = queuedComposerTurns;
   }, [queuedComposerTurns]);
 
@@ -5171,6 +5258,14 @@ export default function ChatView({
       });
       if (!command) return;
 
+      if (command === "composer.focus.toggle") {
+        if (isComposerApprovalState || isVoiceRecording || isVoiceTranscribing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleComposerFocus();
+        return;
+      }
+
       if (command === "modelPicker.toggle") {
         if (!composerPickerShortcutActive) return;
         event.preventDefault();
@@ -5349,6 +5444,7 @@ export default function ChatView({
     setTerminalWorkspaceTab,
     surfaceMode,
     scheduleComposerFocus,
+    toggleComposerFocus,
     toggleTerminalVisibility,
   ]);
 
@@ -5691,6 +5787,7 @@ export default function ChatView({
         queuedTurn.kind === "chat" ? queuedTurn.images.map(cloneComposerImageAttachment) : [];
       const restoredAssistantSelections =
         queuedTurn.kind === "chat" ? queuedTurn.assistantSelections : [];
+      const restoredFileComments = queuedTurn.kind === "chat" ? queuedTurn.fileComments : [];
       promptRef.current = nextPrompt;
       clearComposerDraftContent(activeThread.id);
       setComposerDraftPrompt(activeThread.id, nextPrompt);
@@ -5706,6 +5803,9 @@ export default function ChatView({
         }
         for (const selection of restoredAssistantSelections) {
           addComposerAssistantSelectionToDraft(selection);
+        }
+        for (const comment of restoredFileComments) {
+          addComposerFileCommentToDraft(comment);
         }
         if (queuedTurn.terminalContexts.length > 0) {
           addComposerTerminalContextsToDraft(queuedTurn.terminalContexts);
@@ -5726,6 +5826,7 @@ export default function ChatView({
     [
       activeThread,
       addComposerAssistantSelectionToDraft,
+      addComposerFileCommentToDraft,
       addComposerImagesToDraft,
       addComposerTerminalContextsToDraft,
       clearComposerDraftContent,
@@ -5807,6 +5908,7 @@ export default function ChatView({
     let composerImagesForSend = queuedChatTurn?.images ?? composerImages;
     const composerAssistantSelectionsForSend =
       queuedChatTurn?.assistantSelections ?? composerAssistantSelections;
+    const composerFileCommentsForSend = queuedChatTurn?.fileComments ?? composerFileComments;
     const composerTerminalContextsForSend =
       queuedChatTurn?.terminalContexts ?? composerTerminalContexts;
     const selectedComposerSkillsForSend =
@@ -5832,9 +5934,12 @@ export default function ChatView({
       prompt: promptForSend,
       imageCount: composerImagesForSend.length,
       assistantSelectionCount: composerAssistantSelectionsForSend.length,
+      fileCommentCount: composerFileCommentsForSend.length,
       terminalContexts: composerTerminalContextsForSend,
     });
-    if (showPlanFollowUpPrompt && activeProposedPlan) {
+    // Queued chat turns already captured their intended mode; only live composer
+    // submissions should be interpreted as plan refinement/implementation.
+    if (queuedChatTurn === null && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -5867,6 +5972,7 @@ export default function ChatView({
     if (
       composerImagesForSend.length === 0 &&
       composerAssistantSelectionsForSend.length === 0 &&
+      composerFileCommentsForSend.length === 0 &&
       sendableComposerTerminalContexts.length === 0
     ) {
       const handledSlashCommand = await handleStandaloneSlashCommand(trimmed);
@@ -5966,10 +6072,12 @@ export default function ChatView({
           images: queuedImagesForPersistence,
           assistantSelections: composerAssistantSelectionsForSend,
           terminalContexts: sendableComposerTerminalContexts,
+          fileComments: composerFileCommentsForSend,
         }),
         prompt: promptForSend,
         images: queuedImagesForPersistence,
         assistantSelections: composerAssistantSelectionsForSend,
+        fileComments: composerFileCommentsForSend,
         terminalContexts: sendableComposerTerminalContexts,
         skills: selectedComposerSkillsForSend,
         mentions: selectedComposerMentionsForSend,
@@ -6001,6 +6109,8 @@ export default function ChatView({
         titleSeed = formatAssistantSelectionTitleSeed(composerAssistantSelectionsForSend.length);
       } else if (sendableComposerTerminalContexts.length > 0) {
         titleSeed = formatTerminalContextLabel(sendableComposerTerminalContexts[0]!);
+      } else if (composerFileCommentsForSend.length > 0) {
+        titleSeed = formatFileCommentTitleSeed(composerFileCommentsForSend.length);
       } else {
         titleSeed = GENERIC_CHAT_THREAD_TITLE;
       }
@@ -6126,12 +6236,18 @@ export default function ChatView({
 
     const composerImagesSnapshot = [...composerImagesForSend];
     const composerAssistantSelectionsSnapshot = [...composerAssistantSelectionsForSend];
+    const composerFileCommentsSnapshot = [...composerFileCommentsForSend];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerSkillsSnapshot = [...selectedComposerSkillsForSend];
     const composerMentionsSnapshot = [...selectedComposerMentionsForSend];
-    const messageTextForSend = appendTerminalContextsToPrompt(
-      appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
-      composerTerminalContextsSnapshot,
+    // File comments are serialized outermost (after assistant selections and
+    // terminal contexts) so the trailing-block extractors unwrap them first.
+    const messageTextForSend = appendFileCommentsToPrompt(
+      appendTerminalContextsToPrompt(
+        appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
+        composerTerminalContextsSnapshot,
+      ),
+      composerFileCommentsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -6368,6 +6484,7 @@ export default function ChatView({
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerAssistantSelectionsRef.current.length === 0 &&
+        composerFileCommentsRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
@@ -6384,6 +6501,9 @@ export default function ChatView({
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageAttachment));
         for (const selection of composerAssistantSelectionsSnapshot) {
           addComposerAssistantSelectionToDraft(selection);
+        }
+        for (const comment of composerFileCommentsSnapshot) {
+          addComposerFileCommentToDraft(comment);
         }
         addComposerTerminalContextsToDraft(composerTerminalContextsSnapshot);
         updateSelectedComposerSkills(composerSkillsSnapshot);
@@ -6467,6 +6587,17 @@ export default function ChatView({
     },
     [activeThreadId, setStoreThreadError],
   );
+
+  const onCancelActivePendingUserInput = useCallback(() => {
+    if (!activePendingUserInput || activePendingIsResponding) {
+      return;
+    }
+    promptRef.current = "";
+    setPrompt("");
+    setComposerCursor(0);
+    setComposerTrigger(null);
+    void onRespondToUserInput(activePendingUserInput.requestId, {});
+  }, [activePendingIsResponding, activePendingUserInput, onRespondToUserInput, setPrompt]);
 
   const setActivePendingUserInputQuestionIndex = useCallback(
     (nextQuestionIndex: number) => {
@@ -6686,6 +6817,13 @@ export default function ChatView({
       const providerOptionsForPlanDispatch =
         queuedTurn?.providerOptionsForDispatch ?? providerOptionsForDispatch;
       const modelSelectionForPlanDispatch = queuedTurn?.modelSelection ?? selectedModelSelection;
+      const sourceProposedPlan =
+        nextInteractionMode === "default"
+          ? buildSourceProposedPlanReference({
+              threadId: activeThread.id,
+              proposedPlan: activeProposedPlan,
+            })
+          : undefined;
       rememberCustomBinaryPathForDispatch({
         threadId: threadIdForSend,
         provider: modelSelectionForPlanDispatch.provider,
@@ -6711,14 +6849,7 @@ export default function ChatView({
         dispatchMode,
         runtimeMode: queuedTurn?.runtimeMode ?? runtimeMode,
         interactionMode: nextInteractionMode,
-        ...(nextInteractionMode === "default" && activeProposedPlan
-          ? {
-              sourceProposedPlan: {
-                threadId: activeThread.id,
-                planId: activeProposedPlan.id,
-              },
-            }
-          : {}),
+        ...(sourceProposedPlan ? { sourceProposedPlan } : {}),
         createdAt: messageCreatedAt,
       });
       // Optimistically open the plan sidebar when implementing (not refining).
@@ -6956,6 +7087,10 @@ export default function ChatView({
     });
     const nextThreadTitle = truncateTitle(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModelSelection: ModelSelection = selectedModelSelection;
+    const sourceProposedPlan = buildSourceProposedPlanReference({
+      threadId: activeThread.id,
+      proposedPlan: activeProposedPlan,
+    });
 
     sendInFlightRef.current = true;
     beginLocalDispatch();
@@ -7007,6 +7142,7 @@ export default function ChatView({
           dispatchMode: "queue",
           runtimeMode,
           interactionMode: "default",
+          ...(sourceProposedPlan ? { sourceProposedPlan } : {}),
           createdAt,
         });
       })
@@ -7225,6 +7361,7 @@ export default function ChatView({
         loadingModelProviders={{
           cursor: cursorModelDiscoveryPending,
           kilo: kiloModelDiscoveryPending,
+          pi: piModelDiscoveryPending,
         }}
         hiddenProviders={settings.hiddenProviders}
         providerOrder={settings.providerOrder}
@@ -7264,6 +7401,7 @@ export default function ChatView({
       loadingModelProviders={{
         cursor: cursorModelDiscoveryPending,
         kilo: kiloModelDiscoveryPending,
+        pi: piModelDiscoveryPending,
       }}
       hiddenProviders={settings.hiddenProviders}
       providerOrder={settings.providerOrder}
@@ -7994,6 +8132,13 @@ export default function ChatView({
     },
     [diffEnvironmentPending, navigate, onOpenTurnDiffPanel, threadId],
   );
+  const onReviewComposerLiveChanges = useCallback(() => {
+    if (!activeTurnLiveDiffState.turnId) {
+      onOpenDiff();
+      return;
+    }
+    onOpenTurnDiff(activeTurnLiveDiffState.turnId);
+  }, [activeTurnLiveDiffState.turnId, onOpenDiff, onOpenTurnDiff]);
   const onNavigateToThread = useCallback(
     (nextThreadId: ThreadId) => {
       void navigate({
@@ -8290,7 +8435,7 @@ export default function ChatView({
   // open, and the docked right column when it is closed) so the two never drift.
   const environmentPanelProps: Omit<EnvironmentPanelProps, "open" | "variant"> = {
     gitCwd: threadWorkspaceCwd,
-    openInCwd: threadWorkspaceCwd,
+    openInTarget: threadWorkspaceCwd,
     githubRepository: githubRepositoryQuery.data?.repository ?? null,
     isGitRepo,
     keybindings,
@@ -8336,8 +8481,7 @@ export default function ChatView({
       }
     : null;
 
-  const showComposerLiveChangesHeader =
-    latestTurnLive && activeTurnHasFileChangeWork && repoDiffTotals.fileCount > 0;
+  const showComposerLiveChangesHeader = latestTurnLive && activeTurnLiveDiffState.fileCount > 0;
   const showComposerActiveTaskListCard = Boolean(activeTaskList && !planSidebarOpen);
 
   // Composer layout keeps the task list and footer actions in one render path so
@@ -8368,10 +8512,10 @@ export default function ChatView({
           <ComposerColumnFrame>
             {showComposerLiveChangesHeader ? (
               <ComposerLiveChangesHeader
-                fileCount={repoDiffTotals.fileCount}
-                additions={repoDiffTotals.additions}
-                deletions={repoDiffTotals.deletions}
-                onReview={onOpenDiff}
+                fileCount={activeTurnLiveDiffState.fileCount}
+                additions={activeTurnLiveDiffState.additions}
+                deletions={activeTurnLiveDiffState.deletions}
+                onReview={onReviewComposerLiveChanges}
               />
             ) : null}
             {renderActiveTaskListCard(showComposerLiveChangesHeader)}
@@ -8411,6 +8555,7 @@ export default function ChatView({
                   pendingUserInputQuestionIndex={activePendingQuestionIndex}
                   onToggleUserInputOption={onToggleActivePendingUserInputOption}
                   onAdvanceUserInput={onAdvanceActivePendingUserInput}
+                  onCancelUserInput={onCancelActivePendingUserInput}
                   planFollowUp={
                     showPlanFollowUpPrompt && activeProposedPlan
                       ? {
@@ -8458,13 +8603,17 @@ export default function ChatView({
                   ) : null}
                   {!isComposerApprovalState &&
                     pendingUserInputs.length === 0 &&
-                    (composerAssistantSelections.length > 0 || composerImages.length > 0) && (
+                    (composerAssistantSelections.length > 0 ||
+                      composerFileComments.length > 0 ||
+                      composerImages.length > 0) && (
                       <ComposerReferenceAttachments
                         assistantSelections={composerAssistantSelections}
+                        fileComments={composerFileComments}
                         images={composerImages}
                         nonPersistedImageIdSet={nonPersistedComposerImageIdSet}
                         onExpandImage={setExpandedImage}
                         onRemoveAssistantSelections={clearComposerAssistantSelectionsFromDraft}
+                        onRemoveFileComments={clearComposerFileCommentsFromDraft}
                         onRemoveImage={removeComposerImage}
                       />
                     )}
@@ -8492,7 +8641,9 @@ export default function ChatView({
                       isComposerApprovalState
                         ? "Resolve this approval request to continue"
                         : activePendingProgress
-                          ? "Type your own answer, or leave this blank to use the selected option"
+                          ? activePendingProgress.activeQuestion?.options.length === 0
+                            ? "Type your answer to continue"
+                            : "Type your own answer, or leave this blank to use the selected option"
                           : showPlanFollowUpPrompt && activeProposedPlan
                             ? "Add feedback to refine the plan, or leave this blank to implement it"
                             : hasLiveTurn
@@ -8577,15 +8728,12 @@ export default function ChatView({
                               size="sm"
                               type="button"
                               onClick={togglePlanSidebar}
-                              title={
-                                planSidebarOpen
-                                  ? `Hide ${planSidebarLabel.toLowerCase()} sidebar`
-                                  : `Show ${planSidebarLabel.toLowerCase()} sidebar`
-                              }
+                              title={planSidebarToggleTitle}
+                              aria-label={planSidebarToggleTitle}
                             >
-                              <GoTasklist className="size-3.5" />
+                              <LayoutSidebarIcon className="size-3.5" />
                               <span className="sr-only sm:not-sr-only">
-                                {planSidebarOpen ? `Hide ${planSidebarLabel}` : planSidebarLabel}
+                                {planSidebarToggleLabel}
                               </span>
                             </Button>
                           ) : null}
@@ -8863,7 +9011,7 @@ export default function ChatView({
           hideSidebarControls={isEditorRail}
           hideHandoffControls={terminalWorkspaceTerminalTabActive || isEditorRail}
           isGitRepo={isGitRepo}
-          openInCwd={threadWorkspaceCwd}
+          openInTarget={threadWorkspaceCwd}
           activeProjectScripts={isEditorRail ? undefined : activeProjectScripts}
           preferredScriptId={
             activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null

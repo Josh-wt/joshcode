@@ -8,6 +8,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  buildSourceProposedPlanReference,
   deriveActiveBackgroundTasksState,
   deriveActiveWorkStartedAt,
   deriveActiveTaskListState,
@@ -335,6 +336,31 @@ describe("derivePendingUserInputs", () => {
 
     expect(derivePendingUserInputs(activities)[0]?.questions[0]?.multiSelect).toBe(true);
   });
+
+  it("keeps text-only user-input questions so the composer can collect the answer", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open-text",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-text-1",
+          questions: [
+            {
+              id: "input",
+              header: "Pi plugin",
+              question: "Type a response.",
+              options: [],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)[0]?.questions[0]?.options).toEqual([]);
+  });
 });
 
 describe("deriveActiveTaskListState", () => {
@@ -609,6 +635,29 @@ describe("hasActionableProposedPlan", () => {
   });
 });
 
+describe("buildSourceProposedPlanReference", () => {
+  it("returns source plan metadata for implementation turns", () => {
+    expect(
+      buildSourceProposedPlanReference({
+        threadId: ThreadId.makeUnsafe("thread-source"),
+        proposedPlan: { id: "plan-source" },
+      }),
+    ).toEqual({
+      threadId: ThreadId.makeUnsafe("thread-source"),
+      planId: "plan-source",
+    });
+  });
+
+  it("omits source plan metadata when no plan is active", () => {
+    expect(
+      buildSourceProposedPlanReference({
+        threadId: ThreadId.makeUnsafe("thread-source"),
+        proposedPlan: null,
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe("findSidebarProposedPlan", () => {
   it("prefers the running turn source proposed plan when available on the same thread", () => {
     expect(
@@ -703,6 +752,38 @@ describe("findSidebarProposedPlan", () => {
         threadId: ThreadId.makeUnsafe("thread-1"),
       })?.planMarkdown,
     ).toBe("# Latest");
+  });
+
+  it("hides implemented proposed plans once the implementation turn is settled", () => {
+    expect(
+      findSidebarProposedPlan({
+        threads: [
+          {
+            id: ThreadId.makeUnsafe("thread-1"),
+            proposedPlans: [
+              {
+                id: "plan-implemented",
+                turnId: TurnId.makeUnsafe("turn-plan"),
+                planMarkdown: "# Implemented",
+                implementedAt: "2026-02-23T00:00:05.000Z",
+                implementationThreadId: ThreadId.makeUnsafe("thread-1"),
+                createdAt: "2026-02-23T00:00:01.000Z",
+                updatedAt: "2026-02-23T00:00:05.000Z",
+              },
+            ],
+          },
+        ],
+        latestTurn: {
+          turnId: TurnId.makeUnsafe("turn-implementation"),
+          sourceProposedPlan: {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            planId: "plan-implemented",
+          },
+        },
+        latestTurnSettled: true,
+        threadId: ThreadId.makeUnsafe("thread-1"),
+      }),
+    ).toBeNull();
   });
 });
 
@@ -2386,6 +2467,41 @@ describe("deriveTimelineEntries", () => {
         implementationThreadId: null,
       },
     });
+  });
+
+  it("keeps timestamp ties in message, proposed-plan, then work order", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.makeUnsafe("message-same-time"),
+          role: "assistant",
+          text: "same time",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+      [
+        {
+          id: "plan:thread-1:turn:turn-same-time",
+          turnId: TurnId.makeUnsafe("turn-same-time"),
+          planMarkdown: "# Same time",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        },
+      ],
+      [
+        {
+          id: "work-same-time",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          label: "Ran command",
+          tone: "tool",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "proposed-plan", "work"]);
   });
 
   it("hides tagged plan markdown from the assistant row when a proposed plan exists", () => {

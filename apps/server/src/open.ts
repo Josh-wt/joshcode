@@ -534,7 +534,17 @@ const make = Effect.gen(function* () {
         try: () => open.default(target),
         catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
       }),
-    openInEditor: (input) => Effect.flatMap(resolveEditorLaunch(input), launchDetached),
+    openInEditor: (input) =>
+      // The "system-default" pseudo-editor opens the target with the OS default
+      // application (Preview for PDFs on macOS, the registered viewer elsewhere).
+      // Reuse the already-loaded cross-platform `open` package instead of guessing
+      // per-platform launch commands.
+      input.editor === "system-default"
+        ? Effect.tryPromise({
+            try: () => open.default(input.cwd),
+            catch: (cause) => new OpenError({ message: "Failed to open with default app", cause }),
+          })
+        : Effect.flatMap(resolveEditorLaunch(input), launchDetached),
     runDetachedShellCommand: (input) =>
       launchDetached(resolveDetachedShellLaunch(input.command)),
   } satisfies OpenShape;
