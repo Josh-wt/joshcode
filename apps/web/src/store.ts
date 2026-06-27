@@ -43,7 +43,7 @@ import {
   type ThreadWorkspacePatch,
 } from "./types";
 import { Debouncer } from "@tanstack/react-pacer";
-import { hasLiveTurnTailWork } from "./session-logic";
+import { hasLiveTurnTailWork, isSessionRunningTurn } from "./session-logic";
 import { deriveThreadSummaryMetadata } from "@t3tools/shared/threadSummary";
 import { getThreadFromState, getThreadsFromState } from "./threadDerivation";
 import { toAttachmentPreviewUrl } from "./lib/wsHttpUrl";
@@ -68,6 +68,7 @@ export interface AppState {
   proposedPlanByThreadId?: Record<ThreadId, Record<string, Thread["proposedPlans"][number]>>;
   turnDiffIdsByThreadId?: Record<ThreadId, TurnId[]>;
   turnDiffSummaryByThreadId?: Record<ThreadId, Record<TurnId, Thread["turnDiffSummaries"][number]>>;
+  deletedThreadIdsById?: Record<ThreadId, true>;
 }
 
 type ReadModelProject = OrchestrationReadModel["projects"][number];
@@ -155,6 +156,7 @@ const initialState: AppState = {
   proposedPlanByThreadId: {},
   turnDiffIdsByThreadId: {},
   turnDiffSummaryByThreadId: {},
+  deletedThreadIdsById: {},
 };
 const persistedExpandedProjectCwds = new Set<string>();
 const persistedProjectOrderCwds: string[] = [];
@@ -436,8 +438,6 @@ function toThreadShell(thread: Thread): ThreadShell {
     envMode: thread.envMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    workspaceContexts: thread.workspaceContexts ?? [],
-    activeWorkspaceContextId: thread.activeWorkspaceContextId ?? null,
     associatedWorktreePath: thread.associatedWorktreePath ?? null,
     associatedWorktreeBranch: thread.associatedWorktreeBranch ?? null,
     associatedWorktreeRef: thread.associatedWorktreeRef ?? null,
@@ -815,14 +815,22 @@ function normalizeChatAttachments(
             assistantMessageId: attachment.assistantMessageId,
             text: attachment.text,
           }
-        : {
-            type: "image",
-            id: attachment.id,
-            name: attachment.name,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            previewUrl: toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachment.id)),
-          };
+        : attachment.type === "file"
+          ? {
+              type: "file",
+              id: attachment.id,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+            }
+          : {
+              type: "image",
+              id: attachment.id,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              previewUrl: toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachment.id)),
+            };
     const existing = previousById.get(attachment.id);
     if (
       existing &&
@@ -835,7 +843,12 @@ function normalizeChatAttachments(
           existing.name === nextAttachment.name &&
           existing.mimeType === nextAttachment.mimeType &&
           existing.sizeBytes === nextAttachment.sizeBytes &&
-          existing.previewUrl === nextAttachment.previewUrl))
+          existing.previewUrl === nextAttachment.previewUrl) ||
+        (existing.type === "file" &&
+          nextAttachment.type === "file" &&
+          existing.name === nextAttachment.name &&
+          existing.mimeType === nextAttachment.mimeType &&
+          existing.sizeBytes === nextAttachment.sizeBytes))
     ) {
       return existing;
     }
@@ -918,13 +931,21 @@ function readModelAttachmentsFromChatMessage(
             assistantMessageId: MessageId.makeUnsafe(attachment.assistantMessageId),
             text: attachment.text,
           }
-        : {
-            id: attachment.id,
-            name: attachment.name,
-            type: "image" as const,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-          },
+        : attachment.type === "file"
+          ? {
+              id: attachment.id,
+              name: attachment.name,
+              type: "file" as const,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+            }
+          : {
+              id: attachment.id,
+              name: attachment.name,
+              type: "image" as const,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+            },
     ) ?? []
   );
 }
@@ -1642,8 +1663,6 @@ function normalizeThreadFromReadModel(
       ? incoming.hasActionableProposedPlan
       : undefined;
   const nextWorktreePath = incoming.worktreePath;
-  const nextWorkspaceContexts = incoming.workspaceContexts ?? [];
-  const nextActiveWorkspaceContextId = incoming.activeWorkspaceContextId ?? null;
   const nextAssociatedWorktreePath = incoming.associatedWorktreePath ?? null;
   const nextAssociatedWorktreeBranch = incoming.associatedWorktreeBranch ?? null;
   const nextAssociatedWorktreeRef = incoming.associatedWorktreeRef ?? null;
@@ -1694,8 +1713,6 @@ function normalizeThreadFromReadModel(
     previous.envMode === (incoming.envMode ?? "local") &&
     previous.branch === resolvedBranch &&
     previous.worktreePath === nextWorktreePath &&
-    deepEqualJson(previous.workspaceContexts ?? [], nextWorkspaceContexts) &&
-    (previous.activeWorkspaceContextId ?? null) === nextActiveWorkspaceContextId &&
     (previous.associatedWorktreePath ?? null) === nextAssociatedWorktreePath &&
     (previous.associatedWorktreeBranch ?? null) === nextAssociatedWorktreeBranch &&
     (previous.associatedWorktreeRef ?? null) === nextAssociatedWorktreeRef &&
@@ -1743,8 +1760,6 @@ function normalizeThreadFromReadModel(
     envMode: incoming.envMode ?? "local",
     branch: resolvedBranch,
     worktreePath: nextWorktreePath,
-    workspaceContexts: nextWorkspaceContexts,
-    activeWorkspaceContextId: nextActiveWorkspaceContextId,
     associatedWorktreePath: nextAssociatedWorktreePath,
     associatedWorktreeBranch: nextAssociatedWorktreeBranch,
     associatedWorktreeRef: nextAssociatedWorktreeRef,
@@ -1797,8 +1812,6 @@ function normalizeThreadShellSnapshot(
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
   const lastVisitedAt = previous?.lastVisitedAt ?? incoming.updatedAt;
   const nextWorktreePath = incoming.worktreePath;
-  const nextWorkspaceContexts = incoming.workspaceContexts ?? [];
-  const nextActiveWorkspaceContextId = incoming.activeWorkspaceContextId ?? null;
   const nextAssociatedWorktreePath = incoming.associatedWorktreePath ?? null;
   const nextAssociatedWorktreeBranch = incoming.associatedWorktreeBranch ?? null;
   const nextAssociatedWorktreeRef = incoming.associatedWorktreeRef ?? null;
@@ -1836,8 +1849,6 @@ function normalizeThreadShellSnapshot(
     envMode: incoming.envMode ?? "local",
     branch: resolvedBranch,
     worktreePath: nextWorktreePath,
-    workspaceContexts: nextWorkspaceContexts,
-    activeWorkspaceContextId: nextActiveWorkspaceContextId,
     associatedWorktreePath: nextAssociatedWorktreePath,
     associatedWorktreeBranch: nextAssociatedWorktreeBranch,
     associatedWorktreeRef: nextAssociatedWorktreeRef,
@@ -2130,8 +2141,9 @@ function sidebarThreadSummariesEqual(
     left.envMode === right.envMode &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
-    deepEqualJson(left.workspaceContexts ?? [], right.workspaceContexts ?? []) &&
-    (left.activeWorkspaceContextId ?? null) === (right.activeWorkspaceContextId ?? null) &&
+    (left.associatedWorktreePath ?? null) === (right.associatedWorktreePath ?? null) &&
+    (left.associatedWorktreeBranch ?? null) === (right.associatedWorktreeBranch ?? null) &&
+    (left.associatedWorktreeRef ?? null) === (right.associatedWorktreeRef ?? null) &&
     left.session === right.session &&
     left.createdAt === right.createdAt &&
     (left.archivedAt ?? null) === (right.archivedAt ?? null) &&
@@ -2171,8 +2183,9 @@ function buildSidebarThreadSummary(
     envMode: thread.envMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
-    workspaceContexts: thread.workspaceContexts ?? [],
-    activeWorkspaceContextId: thread.activeWorkspaceContextId ?? null,
+    associatedWorktreePath: thread.associatedWorktreePath ?? null,
+    associatedWorktreeBranch: thread.associatedWorktreeBranch ?? null,
+    associatedWorktreeRef: thread.associatedWorktreeRef ?? null,
     session: thread.session,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt ?? null,
@@ -2444,7 +2457,20 @@ function removeThreadState(state: AppState, threadId: ThreadId): AppState {
 
 // Removes a successfully deleted thread from every client-side projection immediately.
 export function removeDeletedThreadFromClientState(state: AppState, threadId: ThreadId): AppState {
-  return removeThreadState(state, threadId);
+  const deletedThreadIdsById =
+    state.deletedThreadIdsById?.[threadId] === true
+      ? state.deletedThreadIdsById
+      : {
+          ...(state.deletedThreadIdsById ?? {}),
+          [threadId]: true,
+        };
+  const nextState = removeThreadState(state, threadId);
+  return nextState.deletedThreadIdsById === deletedThreadIdsById
+    ? nextState
+    : {
+        ...nextState,
+        deletedThreadIdsById,
+      };
 }
 
 // Drop a project and any thread-scoped state that still points at it.
@@ -2610,7 +2636,7 @@ function reconcileLatestTurnFromSession(
   session: NonNullable<ReadModelThread["session"]>,
   error: string | null,
 ): Thread["latestTurn"] {
-  if (session.status === "running" && session.activeTurnId !== null) {
+  if (isSessionRunningTurn(session)) {
     return buildLatestTurn({
       previous: thread.latestTurn,
       turnId: session.activeTurnId,
@@ -3139,7 +3165,7 @@ function applyOrchestrationEvent(
 
     case "thread.deleted":
       // Deletion is terminal for both active sidebar rows and archived settings rows.
-      return removeThreadState(state, event.payload.threadId);
+      return removeDeletedThreadFromClientState(state, event.payload.threadId);
 
     case "thread.meta-updated":
       return applyThreadUpdate(
@@ -3161,14 +3187,6 @@ function applyOrchestrationEvent(
             event.payload.worktreePath !== undefined
               ? event.payload.worktreePath
               : thread.worktreePath;
-          const nextWorkspaceContexts =
-            event.payload.workspaceContexts !== undefined
-              ? event.payload.workspaceContexts
-              : (thread.workspaceContexts ?? []);
-          const nextActiveWorkspaceContextId =
-            event.payload.activeWorkspaceContextId !== undefined
-              ? (event.payload.activeWorkspaceContextId ?? null)
-              : (thread.activeWorkspaceContextId ?? null);
           const nextAssociatedWorktreePath =
             event.payload.associatedWorktreePath !== undefined
               ? event.payload.associatedWorktreePath
@@ -3199,21 +3217,14 @@ function applyOrchestrationEvent(
             (thread.updatedAt ?? thread.createdAt) > event.payload.updatedAt
               ? thread.updatedAt
               : event.payload.updatedAt;
-          const nextProjectId =
-            event.payload.projectId !== undefined ? event.payload.projectId : thread.projectId;
-          const cwdChanged =
-            thread.worktreePath !== nextWorktreePath || thread.projectId !== nextProjectId;
+          const cwdChanged = thread.worktreePath !== nextWorktreePath;
 
           if (
-            (event.payload.projectId === undefined ||
-              event.payload.projectId === thread.projectId) &&
             (event.payload.title === undefined || event.payload.title === thread.title) &&
             modelSelection === thread.modelSelection &&
             (event.payload.envMode === undefined || event.payload.envMode === thread.envMode) &&
             nextBranch === thread.branch &&
             nextWorktreePath === thread.worktreePath &&
-            deepEqualJson(nextWorkspaceContexts, thread.workspaceContexts ?? []) &&
-            nextActiveWorkspaceContextId === (thread.activeWorkspaceContextId ?? null) &&
             nextAssociatedWorktreePath === (thread.associatedWorktreePath ?? null) &&
             nextAssociatedWorktreeBranch === (thread.associatedWorktreeBranch ?? null) &&
             nextAssociatedWorktreeRef === (thread.associatedWorktreeRef ?? null) &&
@@ -3244,14 +3255,11 @@ function applyOrchestrationEvent(
 
           return {
             ...thread,
-            projectId: nextProjectId,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             modelSelection,
             ...(event.payload.envMode !== undefined ? { envMode: event.payload.envMode } : {}),
             branch: nextBranch,
             worktreePath: nextWorktreePath,
-            workspaceContexts: nextWorkspaceContexts,
-            activeWorkspaceContextId: nextActiveWorkspaceContextId,
             associatedWorktreePath: nextAssociatedWorktreePath,
             associatedWorktreeBranch: nextAssociatedWorktreeBranch,
             associatedWorktreeRef: nextAssociatedWorktreeRef,
@@ -3960,8 +3968,12 @@ export function syncServerShellSnapshot(
 ): AppState {
   rememberProjectUiState(state.projects);
   rememberProjectLocalNames(state.projects);
+  const deletedThreadIdsById = state.deletedThreadIdsById ?? {};
+  const snapshotThreads = snapshot.threads.filter(
+    (thread) => deletedThreadIdsById[thread.id] !== true,
+  );
   const projects = mapProjectsFromShellSnapshot(snapshot.projects, state.projects);
-  const nextThreadIds = new Set(snapshot.threads.map((thread) => thread.id));
+  const nextThreadIds = new Set(snapshotThreads.map((thread) => thread.id));
 
   let normalizedState: AppState = {
     ...state,
@@ -3985,7 +3997,7 @@ export function syncServerShellSnapshot(
     ),
   };
 
-  for (const thread of snapshot.threads) {
+  for (const thread of snapshotThreads) {
     const previousThread = getThreadFromState(state, thread.id);
     normalizedState = writeThreadShellProjection(
       normalizedState,
@@ -4047,10 +4059,16 @@ function syncServerThreadDetailWithOptions(
 }
 
 export function syncServerThreadDetail(state: AppState, thread: ReadModelThread): AppState {
+  if (state.deletedThreadIdsById?.[thread.id] === true) {
+    return removeThreadState(state, thread.id);
+  }
   return syncServerThreadDetailWithOptions(state, thread, { updateThreadArray: true });
 }
 
 export function syncServerThreadDetailHotPath(state: AppState, thread: ReadModelThread): AppState {
+  if (state.deletedThreadIdsById?.[thread.id] === true) {
+    return removeThreadState(state, thread.id);
+  }
   return syncServerThreadDetailWithOptions(state, thread, { updateThreadArray: false });
 }
 
@@ -4061,6 +4079,9 @@ export function applyShellEvent(state: AppState, event: OrchestrationShellStream
     case "project-removed":
       return removeProjectState(state, event.projectId);
     case "thread-upserted": {
+      if (state.deletedThreadIdsById?.[event.thread.id] === true) {
+        return removeThreadState(state, event.thread.id);
+      }
       const nextState = writeThreadShellProjection(
         state,
         normalizeThreadShellSnapshot(event.thread, getThreadFromState(state, event.thread.id)),
@@ -4068,6 +4089,7 @@ export function applyShellEvent(state: AppState, event: OrchestrationShellStream
       return commitThreadProjection(nextState, event.thread.id);
     }
     case "thread-removed":
+      // Shell removals can be retryable draft rollbacks; explicit delete reconciliation owns tombstones.
       return removeThreadState(state, event.threadId);
   }
 }
@@ -4075,13 +4097,14 @@ export function applyShellEvent(state: AppState, event: OrchestrationShellStream
 export function syncServerReadModel(state: AppState, readModel: OrchestrationReadModel): AppState {
   rememberProjectUiState(state.projects);
   rememberProjectLocalNames(state.projects);
+  const deletedThreadIdsById = state.deletedThreadIdsById ?? {};
   const projects = mapProjectsFromReadModel(
     readModel.projects.filter((project) => project.deletedAt === null),
     state.projects,
   );
   const existingThreadById = new Map(state.threads.map((thread) => [thread.id, thread] as const));
   const nextThreads = readModel.threads
-    .filter((thread) => thread.deletedAt === null)
+    .filter((thread) => thread.deletedAt === null && deletedThreadIdsById[thread.id] !== true)
     .map((thread) => {
       const existing = existingThreadById.get(thread.id);
       return normalizeThreadFromReadModel(thread, existing);

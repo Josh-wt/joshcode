@@ -3,9 +3,9 @@ import { PiSquareSplitHorizontal, PiSquareSplitVertical } from "react-icons/pi";
 import { RiApps2Line } from "react-icons/ri";
 import { SiGithub } from "react-icons/si";
 import { VscMcp } from "react-icons/vsc";
-import { LuMessageSquareDashed, LuSplit } from "react-icons/lu";
+import { LuMessageSquareDashed } from "react-icons/lu";
 import { cn } from "./utils";
-import { CentralIcon } from "./central-icons";
+import { CentralIcon, type CentralIconVariant } from "./central-icons";
 import {
   IconAdjustments,
   IconAlertCircle,
@@ -23,6 +23,7 @@ import {
   IconBrain,
   IconBug,
   IconCamera,
+  IconChartBar,
   IconCheck,
   IconChevronDown,
   IconChevronLeft,
@@ -36,7 +37,9 @@ import {
   IconEye,
   IconFile,
   IconFlag,
+  IconFlame,
   IconFlask2,
+  IconHash,
   IconFolder,
   IconFolderOpen,
   IconEdit,
@@ -66,12 +69,15 @@ import {
   IconRotate2,
   IconSelector,
   IconSettings,
+  IconShare3,
+  IconSparkles,
   IconStar,
   IconStarFilled,
   IconSun,
   IconTextWrap,
   IconTool,
   IconTrash,
+  IconTrophy,
   IconWorld,
   IconX,
   type TablerIcon,
@@ -89,13 +95,14 @@ function adaptIcon(Component: TablerIcon): LucideIcon {
 // Wraps a Central icon asset behind the LucideIcon API. Rendering via CSS mask
 // avoids stroke-on-stroke alpha summation that gave hand-drawn SVGs a
 // "stamped twice" look on shared vertices (the previous PinIcon bug).
-function centralIconWrapper(name: string): LucideIcon {
+function centralIconWrapper(name: string, variant?: CentralIconVariant): LucideIcon {
   return function CentralIconWrapper({ className, style, ...rest }) {
     const ariaLabelRaw = (rest as { ["aria-label"]?: unknown })["aria-label"];
     const label = typeof ariaLabelRaw === "string" ? ariaLabelRaw : undefined;
     return (
       <CentralIcon
         name={name}
+        variant={variant}
         className={typeof className === "string" ? className : undefined}
         style={style as CSSProperties | undefined}
         label={label}
@@ -140,6 +147,16 @@ export const CopyIcon = centralIconWrapper("square-behind-square-6");
 export const LinkIcon = centralIconWrapper("chain-link-3");
 export const DiffIcon = centralIconWrapper("difference-modified");
 export const DownloadIcon = adaptIcon(IconDownload);
+export const FlameIcon = adaptIcon(IconFlame);
+export const TrophyIcon = adaptIcon(IconTrophy);
+// The clock doubles as the automation glyph everywhere it appears (meta chip,
+// Automations nav, slash command, created card, environment section), so it is
+// sourced from the Central icon set rather than the Tabler stroke icon.
+export const ClockIcon = centralIconWrapper("clock");
+export const ChartBarIcon = adaptIcon(IconChartBar);
+export const ShareIcon = adaptIcon(IconShare3);
+export const SparklesIcon = adaptIcon(IconSparkles);
+export const HashIcon = adaptIcon(IconHash);
 export const EllipsisIcon = adaptIcon(IconDots);
 export const ExternalLinkIcon = adaptIcon(IconExternalLink);
 export const EyeIcon = adaptIcon(IconEye);
@@ -154,6 +171,10 @@ export const FlaskConicalIcon = adaptIcon(IconFlask2);
 export const FolderClosedIcon = adaptIcon(IconFolder);
 export const FolderIcon = adaptIcon(IconFolder);
 export const FolderOpenIcon = adaptIcon(IconFolderOpen);
+// Stacked "folders" glyph used as the single representation of a file tree /
+// explorer surface (right-dock explorer, editor Files activity, diff file-tree
+// toggle). Central "reversed" outline asset so it matches the rest of the chrome.
+export const FoldersIcon: LucideIcon = centralIconWrapper("folders");
 export const GitCommitIcon: LucideIcon = centralIconWrapper("commits");
 export const GitBranchIcon: LucideIcon = centralIconWrapper("branch");
 export const GitForkIcon = centralIconWrapper("fork");
@@ -165,6 +186,7 @@ export const GitHubIcon: LucideIcon = (props) => (
 );
 export const GitPullRequestIcon = centralIconWrapper("pull-request");
 export const GlobeIcon = adaptIcon(IconWorld);
+export const WebSearchIcon: LucideIcon = centralIconWrapper("globe");
 export const McpIcon: LucideIcon = (props) => (
   <VscMcp className={props.className} style={props.style} />
 );
@@ -195,6 +217,9 @@ export const WindowIcon: LucideIcon = centralIconWrapper("window");
 export const LayoutSidebarIcon: LucideIcon = centralIconWrapper("layout-sidebar");
 export const PencilIcon: LucideIcon = centralIconWrapper("pencil");
 export const PinIcon: LucideIcon = centralIconWrapper("pin");
+// Solid pin from the fill set — used wherever a pin reflects "pinned" status
+// (project + thread rows and their hover cards) rather than a neutral action.
+export const PinFilledIcon: LucideIcon = centralIconWrapper("pin", "fill");
 export const PlayIcon = adaptIcon(IconPlayerPlay);
 export const Plus = adaptIcon(IconPlus);
 export const PlusIcon = adaptIcon(IconPlus);
@@ -231,14 +256,6 @@ export const Trash2 = adaptIcon(IconTrash);
 export const TriangleAlertIcon = adaptIcon(IconAlertTriangle);
 export const Undo2Icon = adaptIcon(IconArrowBackUp);
 export const WrenchIcon = adaptIcon(IconTool);
-export const WorktreeIcon: LucideIcon = (props) => (
-  <LuSplit
-    className={props.className}
-    style={{
-      ...props.style,
-      transform: `${props.style?.transform ?? ""} rotate(90deg)`.trim(),
-    }}
-  />
-);
+export const WorktreeIcon = centralIconWrapper("arrow-split-right");
 export const XIcon = adaptIcon(IconX);
 export const ZapIcon = adaptIcon(IconBolt);

@@ -51,6 +51,7 @@ import {
   type BranchNameGenerationInput,
   type ThreadTitleGenerationInput,
 } from "../../git/Services/TextGeneration.ts";
+import { resolveTextGenerationInputForSelection } from "../../git/textGenerationSelection.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
@@ -125,7 +126,7 @@ function attachmentTitleSeed(attachment: ChatAttachment | undefined): string {
   if (!attachment) {
     return "";
   }
-  if (attachment.type === "image") {
+  if (attachment.type === "image" || attachment.type === "file") {
     return attachment.name;
   }
   return attachment.text.trim();
@@ -276,12 +277,6 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
 }
 
-function hasDedicatedTextGenerationProvider(provider: ProviderKind | undefined): boolean {
-  return (
-    provider === "codex" || provider === "cursor" || provider === "kilo" || provider === "opencode"
-  );
-}
-
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -371,30 +366,6 @@ const make = Effect.gen(function* () {
   const editResendTurnStartKeys = new Set<string>();
   const drainingQueuedTurns = new Set<string>();
   const sidechatContextBootstrapThreadIds = new Set<string>();
-
-  const resolveTextGenerationInputForSelection = (
-    modelSelection: ModelSelection | undefined,
-    providerOptions: ProviderStartOptions | undefined,
-  ) => {
-    if (!hasDedicatedTextGenerationProvider(modelSelection?.provider)) {
-      return null;
-    }
-
-    if (modelSelection?.provider === "codex") {
-      return {
-        modelSelection,
-        ...(providerOptions ? { providerOptions } : {}),
-        ...(providerOptions?.codex?.homePath
-          ? { codexHomePath: providerOptions.codex.homePath }
-          : {}),
-      } as const;
-    }
-
-    return {
-      modelSelection,
-      ...(providerOptions ? { providerOptions } : {}),
-    } as const;
-  };
 
   const resolveThreadTextGenerationInput = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;

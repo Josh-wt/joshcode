@@ -5,8 +5,12 @@
 
 import { memo } from "react";
 import { type ComposerImageAttachment } from "../../composerDraftStore";
-import { CircleAlertIcon, XIcon } from "~/lib/icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { AttachmentRemoveButton } from "./AttachmentRemoveButton";
+import {
+  DRAFT_ATTACHMENT_WARNING_DESCRIPTION,
+  DraftAttachmentWarningIcon,
+} from "./DraftAttachmentWarning";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 
 interface ComposerImageAttachmentChipProps {
@@ -50,29 +54,20 @@ export const ComposerImageAttachmentChip = memo(function ComposerImageAttachment
         <Tooltip>
           <TooltipTrigger
             render={
-              <span
-                role="img"
-                aria-label="Draft attachment may not persist"
-                className="absolute bottom-1 left-1 inline-flex size-5 items-center justify-center rounded-full bg-[var(--composer-surface)] text-amber-600 shadow-sm"
-              >
-                <CircleAlertIcon className="size-3" />
-              </span>
+              <DraftAttachmentWarningIcon variant="badge" className="absolute bottom-1 left-1" />
             }
           />
           <TooltipPopup side="top" className="max-w-64 whitespace-normal leading-tight">
-            Draft attachment could not be saved locally and may be lost on navigation.
+            {DRAFT_ATTACHMENT_WARNING_DESCRIPTION}
           </TooltipPopup>
         </Tooltip>
       )}
 
-      <button
-        type="button"
-        className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-foreground/80 text-background shadow-sm transition-colors hover:bg-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => onRemoveImage(image.id)}
-        aria-label={`Remove ${image.name}`}
-      >
-        <XIcon className="size-3" />
-      </button>
+      <AttachmentRemoveButton
+        size="md"
+        label={`Remove ${image.name}`}
+        onRemove={() => onRemoveImage(image.id)}
+      />
     </div>
   );
 });
