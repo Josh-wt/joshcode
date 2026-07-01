@@ -5,10 +5,7 @@
 import type { CSSProperties } from "react";
 import type { ProjectId, ProviderKind, ThreadId } from "@t3tools/contracts";
 
-import {
-  isHomeChatContainerProject,
-  resolveHomeChatContainerGrouping,
-} from "~/lib/chatProjects";
+import { isHomeChatContainerProject, resolveHomeChatContainerGrouping } from "~/lib/chatProjects";
 import { cn } from "~/lib/utils";
 import type { Project, SidebarThreadSummary } from "~/types";
 
@@ -185,9 +182,7 @@ export function buildThreadTabGroups(input: {
   const pinnedRank = new Map(input.pinnedProjectIds.map((projectId, index) => [projectId, index]));
 
   const orderedProjectIds = [...visibleProjects]
-    .filter(
-      (project) => project.kind !== "chat" || mergedThreadsByProjectId.has(project.id),
-    )
+    .filter((project) => project.kind !== "chat" || mergedThreadsByProjectId.has(project.id))
     .toSorted((left, right) => {
       const leftPinned = pinnedRank.get(left.id);
       const rightPinned = pinnedRank.get(right.id);

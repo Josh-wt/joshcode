@@ -10,9 +10,7 @@ import { IoIosArrowRoundBack, IoIosArrowRoundForward } from "react-icons/io";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { RotateCcwIcon } from "~/lib/icons";
-import {
-  useDesktopTopBarWindowControlsGutterClassName,
-} from "~/hooks/useDesktopTopBarGutter";
+import { useDesktopTopBarWindowControlsGutterClassName } from "~/hooks/useDesktopTopBarGutter";
 import { cn } from "~/lib/utils";
 import { SoccerBall } from "./SoccerBall";
 import {

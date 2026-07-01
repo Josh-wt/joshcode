@@ -13,9 +13,7 @@ import { useAppChrome } from "~/appChromeContext";
 import { useAppChromeStore } from "~/appChromeStore";
 import { useChatChromeActions } from "~/chatChromeActionsContext";
 import { useHandleNewChat } from "~/hooks/useHandleNewChat";
-import {
-  useDesktopTopBarWindowControlsGutterClassName,
-} from "~/hooks/useDesktopTopBarGutter";
+import { useDesktopTopBarWindowControlsGutterClassName } from "~/hooks/useDesktopTopBarGutter";
 import { shortcutLabelForCommand } from "~/keybindings";
 import {
   AutomationIcon,
@@ -28,10 +26,7 @@ import {
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
 
-import {
-  AppTopBarChromeIsland,
-  AppTopBarChromeIslandDivider,
-} from "./AppTopBarChromeIsland";
+import { AppTopBarChromeIsland, AppTopBarChromeIslandDivider } from "./AppTopBarChromeIsland";
 import { AppTopBarViewModeSwitch } from "./AppTopBarViewModeSwitch";
 import { APP_TOP_BAR_ISLAND_TOP_OFFSET_PX, isThreadRoutePathname } from "./threadTabBar.logic";
 
