@@ -19,8 +19,6 @@ export function ThreadTabStrip(props: { className?: string; showNewThreadButton?
     toggleProjectCollapsed,
     createThreadInProject,
     createWorktreeThreadInProject,
-    createTerminalThreadInProject,
-    createDisposableThreadInProject,
     navigateToThread,
     confirmAndArchiveThread,
     confirmAndRemoveProject,
@@ -39,7 +37,7 @@ export function ThreadTabStrip(props: { className?: string; showNewThreadButton?
     >
       <div
         ref={scrollContainerRef}
-        className="flex min-w-0 flex-1 items-end gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 flex-1 items-end gap-2 overflow-x-auto overflow-y-visible pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {tabGroups.map((group) => (
           <ThreadTabGroup

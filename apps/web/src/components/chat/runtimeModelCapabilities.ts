@@ -77,9 +77,13 @@ export function getRuntimeAwareModelCapabilities(input: {
 }): ModelCapabilities {
   const staticCapabilities = getModelCapabilities(input.provider, input.model);
   // Runtime discovery is authoritative when available; the static table is only a startup fallback.
+  // Runtime discovery can omit fast-mode support for newer Codex models; keep static
+  // catalog support when the selected model explicitly advertises it.
   const supportsFastMode =
-    (input.provider === "codex" || input.provider === "cursor") && input.runtimeModel
-      ? input.runtimeModel.supportsFastMode === true
+    input.provider === "codex" || input.provider === "cursor"
+      ? input.runtimeModel
+        ? input.runtimeModel.supportsFastMode === true || staticCapabilities.supportsFastMode
+        : staticCapabilities.supportsFastMode
       : staticCapabilities.supportsFastMode;
   const supportsThinkingToggle =
     input.runtimeModel?.supportsThinkingToggle ?? staticCapabilities.supportsThinkingToggle;

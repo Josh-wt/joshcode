@@ -45,7 +45,8 @@ import {
   ThreadId,
   TurnId,
   type UserInputQuestion,
-  ClaudeCodeEffort,
+  type ClaudeApiEffort,
+  type ClaudeCodeEffort,
   type ProviderComposerCapabilities,
   type ProviderListCommandsInput,
   type ProviderListCommandsResult,
@@ -82,9 +83,9 @@ import {
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ensureClaudeCredentialsFresh } from "../../claudeCredentials.ts";
-import { prepareClaudeRuntimeEnvironment } from "../../claudeProcessEnv.ts";
 import { ServerConfig } from "../../config.ts";
 import { buildFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
+import { buildClaudeProcessEnv } from "../claudeProcessEnv.ts";
 import { positiveFiniteNumber } from "../tokenUsage.ts";
 import {
   ProviderAdapterProcessError,
@@ -315,7 +316,7 @@ function normalizeClaudeStreamMessages(cause: Cause.Cause<Error>): ReadonlyArray
 
 function getEffectiveClaudeCodeEffort(
   effort: ClaudeCodeEffort | null | undefined,
-): Exclude<ClaudeCodeEffort, "ultrathink" | "ultracode"> | null {
+): ClaudeApiEffort | null {
   if (!effort) {
     return null;
   }
@@ -692,6 +693,30 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
     return `${toolName}: ${serialized}`;
   }
   return `${toolName}: ${serialized.slice(0, 397)}...`;
+}
+
+// Tools whose result is surfaced through a dedicated runtime channel — AskUserQuestion
+// via the user-input request flow, ExitPlanMode via the proposed-plan flow — must NOT
+// also emit a generic tool-call lifecycle item, or the timeline shows a redundant
+// "ToolName: {json}" row alongside the real interaction surface.
+function isClientSurfacedClaudeTool(toolName: string): boolean {
+  return toolName === "AskUserQuestion" || toolName === "ExitPlanMode";
+}
+
+// Stable per-call identity stamped on every tool lifecycle event's data so the client
+// can collapse started/updated/completed (and dedupe parallel calls) by tool-call id
+// instead of relying on row adjacency. Mirrors the shape other adapters emit (Pi/Grok).
+function toolLifecycleEventData(
+  tool: Pick<ToolInFlight, "itemId" | "toolName" | "input">,
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    toolCallId: tool.itemId,
+    callId: tool.itemId,
+    toolName: tool.toolName,
+    input: tool.input,
+    ...extra,
+  };
 }
 
 function normalizeClaudeTodoStatus(value: unknown): "pending" | "inProgress" | "completed" {
@@ -1300,6 +1325,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
+    const resolveClaudeSdkEnv = Effect.sync(() =>
+      buildClaudeProcessEnv({ env: process.env, homeDir: serverConfig.homeDir }),
+    );
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
@@ -1868,10 +1896,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               status: status === "completed" ? "completed" : "failed",
               title: tool.title,
               ...(tool.detail ? { detail: tool.detail } : {}),
-              data: {
-                toolName: tool.toolName,
-                input: tool.input,
-              },
+              data: toolLifecycleEventData(tool),
             },
             providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
             raw: {
@@ -2096,10 +2121,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 status: "inProgress",
                 title: nextTool.title,
                 ...(nextTool.detail ? { detail: nextTool.detail } : {}),
-                data: {
-                  toolName: nextTool.toolName,
-                  input: nextTool.input,
-                },
+                data: toolLifecycleEventData(nextTool),
               },
               providerRefs: nativeProviderRefs(context, { providerItemId: nextTool.itemId }),
               raw: {
@@ -2136,6 +2158,11 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
           const toolName = block.name;
+          // AskUserQuestion / ExitPlanMode are rendered by their own runtime channels;
+          // emitting a generic tool item here would duplicate them as a raw row.
+          if (isClientSurfacedClaudeTool(toolName)) {
+            return;
+          }
           const itemType = classifyToolItemType(toolName);
           const toolInput =
             typeof block.input === "object" && block.input !== null
@@ -2172,10 +2199,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               status: "inProgress",
               title: tool.title,
               ...(tool.detail ? { detail: tool.detail } : {}),
-              data: {
-                toolName: tool.toolName,
-                input: toolInput,
-              },
+              data: toolLifecycleEventData(tool),
             },
             providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
             raw: {
@@ -2236,11 +2260,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
           const [index, tool] = toolEntry;
           const itemStatus = toolResult.isError ? "failed" : "completed";
-          const toolData = {
-            toolName: tool.toolName,
-            input: tool.input,
-            result: toolResult.block,
-          };
+          const toolData = toolLifecycleEventData(tool, { result: toolResult.block });
 
           const updatedStamp = yield* makeEventStamp();
           yield* offerRuntimeEvent({
@@ -3301,25 +3321,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(ultracode ? { ultracode: true } : {}),
         };
         const claudeSubagents = buildClaudeSdkSubagents();
-        const claudeEnv = yield* Effect.tryPromise({
-          try: () =>
-            prepareClaudeRuntimeEnvironment({
-              homeDir: serverConfig.homeDir,
-            }).catch((cause) => {
-              console.warn(
-                "[claude] Failed to prepare runtime environment; falling back to process.env.",
-                cause,
-              );
-              return process.env;
-            }),
-          catch: (cause) =>
-            new ProviderAdapterProcessError({
-              provider: PROVIDER,
-              threadId: input.threadId,
-              detail: "Failed to prepare Claude runtime environment",
-              cause,
-            }),
-        });
+        const claudeSdkEnv = yield* resolveClaudeSdkEnv;
 
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -3350,7 +3352,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: claudeEnv,
+          env: claudeSdkEnv,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         };
 
@@ -3755,6 +3757,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     async function discoverCommandsViaTemporaryProcess(
       cwd: string,
+      env: NodeJS.ProcessEnv,
     ): Promise<ProviderListCommandsResult> {
       // Spawn a lightweight Claude Code process for native command discovery.
       // The SDK's supportedCommands() awaits an internal initialization promise
@@ -3768,6 +3771,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           settingSources: [...CLAUDE_SETTING_SOURCES],
           permissionMode: "plan" as PermissionMode,
           persistSession: false,
+          env,
         },
       });
 
@@ -3813,8 +3817,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         // 3. Spawn a temporary process for discovery (deduplicating concurrent requests).
+        const claudeSdkEnv = yield* resolveClaudeSdkEnv;
         const discoveryPromise =
-          pendingCommandDiscovery ?? discoverCommandsViaTemporaryProcess(input.cwd);
+          pendingCommandDiscovery ?? discoverCommandsViaTemporaryProcess(input.cwd, claudeSdkEnv);
         pendingCommandDiscovery = discoveryPromise;
 
         const result = yield* Effect.tryPromise({
