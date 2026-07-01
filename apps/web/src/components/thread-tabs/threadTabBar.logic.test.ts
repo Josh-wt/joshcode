@@ -53,6 +53,8 @@ describe("threadTabBar.logic", () => {
     expect(isThreadRoutePathname("/thread-abc")).toBe(true);
     expect(isThreadRoutePathname("/settings")).toBe(false);
     expect(isThreadRoutePathname("/kanban/project-1")).toBe(false);
+    expect(isThreadRoutePathname("/automations")).toBe(false);
+    expect(isThreadRoutePathname("/plugins")).toBe(false);
     expect(isThreadRoutePathname("/")).toBe(false);
   });
 
