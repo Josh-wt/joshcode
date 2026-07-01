@@ -440,6 +440,7 @@ import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalAc
 import { ComposerExtrasMenu } from "./chat/ComposerExtrasMenu";
 import { ContextWindowMeter } from "./chat/ContextWindowMeter";
 import { ComposerInputBanners } from "./chat/ComposerInputBanners";
+import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import { ComposerVoiceButton } from "./chat/ComposerVoiceButton";
 import { ComposerVoiceRecorderBar } from "./chat/ComposerVoiceRecorderBar";
 import { ComposerReferenceAttachments } from "./chat/ComposerReferenceAttachments";
@@ -750,7 +751,7 @@ function buildThreadPrimaryWorkspaceContext(input: {
     id: "primary",
     projectId: input.thread.projectId,
     label: input.project.name || input.project.folderName,
-    role: "primary",
+    role: "primary" as const,
     accessMode: "read-write",
     cwd: input.thread.worktreePath ?? input.project.cwd,
     envMode: input.thread.envMode ?? "local",
@@ -1601,7 +1602,7 @@ export default function ChatView({
             ...context,
             ...primaryContext,
             id: "primary",
-            role: "primary",
+            role: "primary" as const,
             label: primaryContext.label,
           }
         : context,
@@ -9915,6 +9916,20 @@ export default function ChatView({
                 onEdit={onEditQueuedComposerTurn}
                 attachedToPrevious={showComposerLiveChangesHeader || showComposerActiveTaskListCard}
               />
+              {!activePendingApproval && pendingUserInputs.length > 0 ? (
+                <div className="pb-2">
+                  <ComposerPendingUserInputPanel
+                    pendingUserInputs={pendingUserInputs}
+                    respondingRequestIds={respondingUserInputRequestIds}
+                    answers={activePendingDraftAnswers}
+                    questionIndex={activePendingQuestionIndex}
+                    onToggleOption={onToggleActivePendingUserInputOption}
+                    onAdvance={onAdvanceActivePendingUserInput}
+                    onPrevious={onPreviousActivePendingUserInputQuestion}
+                    onCancel={onCancelActivePendingUserInput}
+                  />
+                </div>
+              ) : null}
             </div>
             <div
               className={cn(
@@ -9934,15 +9949,8 @@ export default function ChatView({
                   roundedTopReset={false}
                   activeApproval={activePendingApproval}
                   pendingApprovalCount={pendingApprovals.length}
-                  pendingUserInputs={pendingUserInputs}
-                  respondingUserInputRequestIds={respondingUserInputRequestIds}
-                  pendingUserInputAnswers={activePendingDraftAnswers}
-                  pendingUserInputQuestionIndex={activePendingQuestionIndex}
-                  onToggleUserInputOption={onToggleActivePendingUserInputOption}
-                  onAdvanceUserInput={onAdvanceActivePendingUserInput}
-                  onCancelUserInput={onCancelActivePendingUserInput}
                   planFollowUp={
-                    showPlanFollowUpPrompt && activeProposedPlan
+                    pendingUserInputs.length === 0 && showPlanFollowUpPrompt && activeProposedPlan
                       ? {
                           id: activeProposedPlan.id,
                           title: proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null,
@@ -9950,6 +9958,7 @@ export default function ChatView({
                       : null
                   }
                   automationSetup={
+                    pendingUserInputs.length === 0 &&
                     pendingAutomationConversation &&
                     pendingAutomationConversation.threadId === threadId
                       ? { onCancel: cancelAutomationConversation }

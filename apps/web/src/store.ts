@@ -1686,7 +1686,7 @@ function normalizeThreadFromReadModel(
   });
   const nextWorkspaceContexts =
     incoming.workspaceContexts !== undefined
-      ? incoming.workspaceContexts
+      ? [...incoming.workspaceContexts]
       : (previous?.workspaceContexts ?? []);
   const nextActiveWorkspaceContextId =
     incoming.activeWorkspaceContextId !== undefined
@@ -3227,7 +3227,7 @@ function applyOrchestrationEvent(
           });
           const nextWorkspaceContexts =
             event.payload.workspaceContexts !== undefined
-              ? event.payload.workspaceContexts
+              ? [...event.payload.workspaceContexts]
               : (thread.workspaceContexts ?? []);
           const nextActiveWorkspaceContextId =
             event.payload.activeWorkspaceContextId !== undefined
@@ -4368,7 +4368,9 @@ export function setThreadWorkspace(
       nextCreateBranchFlowCompleted: patch.createBranchFlowCompleted,
     });
     const nextWorkspaceContexts =
-      patch.workspaceContexts !== undefined ? patch.workspaceContexts : (t.workspaceContexts ?? []);
+      patch.workspaceContexts !== undefined
+        ? [...patch.workspaceContexts]
+        : (t.workspaceContexts ?? []);
     const nextActiveWorkspaceContextId =
       patch.activeWorkspaceContextId !== undefined
         ? patch.activeWorkspaceContextId

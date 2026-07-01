@@ -51,7 +51,7 @@ export function ThreadTabGroup(props: {
       style={groupStyle}
       onContextMenu={props.onContextMenu}
     >
-      <div className="relative inline-flex shrink-0 items-center">
+      <div className="relative inline-flex shrink-0 items-center overflow-visible">
         <button
           type="button"
           className={cn(

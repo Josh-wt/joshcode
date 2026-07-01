@@ -5,7 +5,7 @@
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  DisposableThreadIcon,
+  TemporaryThreadIcon,
   FolderIcon,
   GitMergedSimpleIcon,
   GitPullRequestIcon,
@@ -165,6 +165,7 @@ import {
   getDesktopUpdateButtonPresentation,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateButtonVariant,
+  getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
@@ -4487,7 +4488,7 @@ export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }
     const isPendingConfirmation = pendingArchiveConfirmationThreadId === input.threadId;
 
     return (
-      <SidebarRowHoverActions threadId={input.threadId} pinnedVisible={isPendingConfirmation}>
+      <SidebarRowHoverActions threadId={input.threadId}>
         {isPendingConfirmation ? (
           <button
             type="button"
@@ -5011,7 +5012,7 @@ export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }
                 <TooltipTrigger
                   render={
                     <span className="inline-flex shrink-0 items-center text-muted-foreground/55">
-                      <DisposableThreadIcon />
+                      <TemporaryThreadIcon />
                     </span>
                   }
                 />
@@ -5191,7 +5192,7 @@ export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }
               }}
             />
             <SidebarIconButton
-              icon={DisposableThreadIcon}
+              icon={TemporaryThreadIcon}
               glyph="chromeLu"
               label={`Create disposable thread in ${project.name}`}
               tooltip="New disposable thread"
@@ -5624,6 +5625,7 @@ export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }
   const desktopUpdateButtonVariant = getDesktopUpdateButtonVariant(desktopUpdateState, {
     installing: installingDesktopUpdate,
   });
+  const desktopUpdateDownloadPercent = getDesktopUpdateDownloadPercent(desktopUpdateState);
   const desktopUpdateButtonClasses =
     desktopUpdateButtonVariant === "installing" || desktopUpdateButtonVariant === "progress"
       ? "bg-sky-500 hover:bg-sky-600"
@@ -6486,9 +6488,9 @@ export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }
                               </span>
                             ) : null}
                           </span>
-                          {desktopUpdateButtonPresentation.progressPercent !== null ? (
+                          {desktopUpdateDownloadPercent !== null ? (
                             <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white/95">
-                              {desktopUpdateButtonPresentation.progressPercent}%
+                              {desktopUpdateDownloadPercent}%
                             </span>
                           ) : null}
                         </button>

@@ -91,7 +91,7 @@ export function buildProjectWorkspaceContext(input: {
       }),
     projectId: input.project.id,
     label: formatWorkspaceContextLabel(projectLabel, branch, worktreePath),
-    role: input.role ?? "context",
+    role: (input.role ?? "context") as ThreadWorkspaceContext["role"],
     accessMode: "read-write",
     cwd,
     envMode,
@@ -159,7 +159,7 @@ export function appendWorkspaceContext(
     ...baseContexts,
     {
       ...nextContext,
-      role: "context",
+      role: "context" as const,
     },
   ];
 }

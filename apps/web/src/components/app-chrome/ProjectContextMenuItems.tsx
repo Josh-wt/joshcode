@@ -5,7 +5,7 @@
 import {
   ArchiveIcon,
   CopyIcon,
-  DisposableThreadIcon,
+  TemporaryThreadIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
   KanbanIcon,
@@ -97,7 +97,7 @@ export function ProjectContextMenuItems(props: {
         className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
         onClick={() => void props.onAction(props.projectId, "new-temporary-thread")}
       >
-        <ProjectContextMenuIcon icon={DisposableThreadIcon} />
+        <ProjectContextMenuIcon icon={TemporaryThreadIcon} />
         <span>New temporary chat</span>
       </MenuItem>
       <MenuSeparator />
