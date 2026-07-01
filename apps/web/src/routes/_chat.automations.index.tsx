@@ -18,7 +18,6 @@ import {
 } from "~/lib/automationDraft";
 import { automationLifecycleState } from "~/lib/automationStatus";
 import {
-  useDesktopTopBarTrafficLightGutterClassName,
   useDesktopTopBarWindowControlsGutterClassName,
 } from "~/hooks/useDesktopTopBarGutter";
 import { CentralIcon } from "~/lib/central-icons";
@@ -149,7 +148,6 @@ function rowMeta(definition: AutomationDefinition, latestRun: AutomationRun | nu
 function AutomationsRouteView() {
   const navigate = useNavigate();
   const { settings } = useAppSettings();
-  const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
   const desktopTopBarWindowControlsGutterClassName =
     useDesktopTopBarWindowControlsGutterClassName();
   const projects = useStore((state) => state.projects);
@@ -379,8 +377,7 @@ function AutomationsRouteView() {
           className={cn(
             CHAT_SURFACE_HEADER_DIVIDER_CLASS_NAME,
             CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-            "drag-region",
-            desktopTopBarTrafficLightGutterClassName,
+            "[-webkit-app-region:no-drag]",
             desktopTopBarWindowControlsGutterClassName,
           )}
         >

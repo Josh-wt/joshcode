@@ -1,5 +1,5 @@
 // FILE: AppTopBarIslands.tsx
-// Purpose: Floating app + thread controls overlaid on the chat column (below the tab bar).
+// Purpose: Top-bar island clusters — left chrome in AppTopBar, thread actions overlaid on chat.
 // Layer: Route chrome
 
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
@@ -14,7 +14,6 @@ import { useAppChromeStore } from "~/appChromeStore";
 import { useChatChromeActions } from "~/chatChromeActionsContext";
 import { useHandleNewChat } from "~/hooks/useHandleNewChat";
 import {
-  useDesktopTopBarTrafficLightGutterClassName,
   useDesktopTopBarWindowControlsGutterClassName,
 } from "~/hooks/useDesktopTopBarGutter";
 import { shortcutLabelForCommand } from "~/keybindings";
@@ -34,11 +33,11 @@ import {
   AppTopBarChromeIslandDivider,
 } from "./AppTopBarChromeIsland";
 import { AppTopBarViewModeSwitch } from "./AppTopBarViewModeSwitch";
-import { APP_TOP_BAR_ISLAND_TOP_OFFSET_PX } from "./threadTabBar.logic";
+import { APP_TOP_BAR_ISLAND_TOP_OFFSET_PX, isThreadRoutePathname } from "./threadTabBar.logic";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
-export function AppTopBarIslands() {
+export function AppTopBarLeftIslands(props: { layout: "thread" | "utility" }) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const navigate = useNavigate();
   const isOnSettings = pathname === "/settings";
@@ -47,10 +46,7 @@ export function AppTopBarIslands() {
   const isOnPlugins = pathname.startsWith("/plugins");
   const openSearchPalette = useAppChromeStore((state) => state.openSearchPalette);
   const { openAddProjectDialog } = useAppChrome();
-  const { threadActions } = useChatChromeActions();
   const { handleNewChat } = useHandleNewChat();
-  const desktopGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
-  const windowControlsGutterClassName = useDesktopTopBarWindowControlsGutterClassName();
   const { data: keybindings = EMPTY_KEYBINDINGS } = useQuery({
     ...serverConfigQueryOptions(),
     select: (config) => config.keybindings,
@@ -58,8 +54,8 @@ export function AppTopBarIslands() {
   const searchShortcutLabel = shortcutLabelForCommand(keybindings, "sidebar.search");
   const addProjectShortcutLabel = shortcutLabelForCommand(keybindings, "sidebar.addProject");
 
-  const leftIsland = (
-    <>
+  return (
+    <AppTopBarChromeIsland side="left" layout={props.layout}>
       <div className="inline-flex items-center gap-0.5">
         <AppNavigationButtons compact />
         <AppTopBarViewModeSwitch compact />
@@ -145,24 +141,29 @@ export function AppTopBarIslands() {
           <SettingsIcon className="size-3.5" />
         </IconButton>
       </div>
-    </>
+    </AppTopBarChromeIsland>
   );
+}
+
+/** Thread-route header actions; mounted after route content so Electron no-drag wins. */
+export function AppTopBarThreadActionsIsland() {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const { threadActions } = useChatChromeActions();
+  const windowControlsGutterClassName = useDesktopTopBarWindowControlsGutterClassName();
+
+  if (!isThreadRoutePathname(pathname) || !threadActions) {
+    return null;
+  }
 
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 z-40 flex items-start justify-between px-2 sm:px-3"
+      className="pointer-events-none absolute inset-x-0 z-40 flex items-start justify-end px-2 sm:px-3"
       style={{ top: APP_TOP_BAR_ISLAND_TOP_OFFSET_PX }}
     >
       <AppTopBarChromeIsland
-        side="left"
-        className={cn("pointer-events-auto", desktopGutterClassName)}
-      >
-        {leftIsland}
-      </AppTopBarChromeIsland>
-      <AppTopBarChromeIsland
         side="right"
         className={cn(
-          "pointer-events-auto ml-auto",
+          "pointer-events-auto",
           windowControlsGutterClassName && "mr-[138px] sm:mr-[138px]",
         )}
       >

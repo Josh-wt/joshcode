@@ -50,7 +50,7 @@ import { EnvironmentProjectInstructionsSection } from "./EnvironmentProjectInstr
 import { ENVIRONMENT_PANEL_RECAP_MARKDOWN_CLASS_NAME } from "./environmentPanelStyles";
 import {
   APP_TOP_BAR_ISLAND_OVERHANG_PX,
-  APP_TOP_BAR_ISLAND_TOP_OFFSET_PX,
+  THREAD_TAB_BAR_HEIGHT_PX,
 } from "~/components/thread-tabs/threadTabBar.logic";
 import {
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
@@ -64,9 +64,9 @@ import {
 // Mirrors the card footprint — w-72 (288px) plus the wrapper gutters — when docked inset was used.
 export const ENVIRONMENT_DOCKED_CONTENT_INSET_PX = 312;
 
-/** Clearance below the top-bar corner islands before the environment card starts. */
+/** Clearance below the top chrome row before the environment card starts. */
 export const ENVIRONMENT_PANEL_TOP_OFFSET_PX =
-  APP_TOP_BAR_ISLAND_TOP_OFFSET_PX + APP_TOP_BAR_ISLAND_OVERHANG_PX + 4;
+  THREAD_TAB_BAR_HEIGHT_PX + APP_TOP_BAR_ISLAND_OVERHANG_PX + 4;
 
 const ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME =
   "pointer-events-none absolute right-0 bottom-0 z-20 flex flex-col pb-3 pr-2";

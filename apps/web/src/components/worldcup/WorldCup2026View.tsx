@@ -7,12 +7,10 @@
 import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef } from "react";
 import { IoIosArrowRoundBack, IoIosArrowRoundForward } from "react-icons/io";
 
-import { SidebarHeaderNavigationControls } from "../SidebarHeaderNavigationControls";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { RotateCcwIcon } from "~/lib/icons";
 import {
-  useDesktopTopBarTrafficLightGutterClassName,
   useDesktopTopBarWindowControlsGutterClassName,
 } from "~/hooks/useDesktopTopBarGutter";
 import { cn } from "~/lib/utils";
@@ -49,7 +47,6 @@ function createInitialState(bounds: BallBounds): BallState {
 }
 
 export function WorldCup2026View() {
-  const trafficLightGutter = useDesktopTopBarTrafficLightGutterClassName();
   const windowControlsGutter = useDesktopTopBarWindowControlsGutterClassName();
 
   const fieldRef = useRef<HTMLDivElement | null>(null);
@@ -268,12 +265,10 @@ export function WorldCup2026View() {
       <div className="flex h-full flex-col">
         <div
           className={cn(
-            "drag-region flex h-12 shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6",
-            trafficLightGutter,
+            "flex h-12 shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6 [-webkit-app-region:no-drag]",
             windowControlsGutter,
           )}
         >
-          <SidebarHeaderNavigationControls />
           <div className="flex items-center gap-2">
             <SoccerBall className="size-5" />
             <span className="text-sm font-semibold tracking-tight text-foreground">

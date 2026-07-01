@@ -251,6 +251,7 @@ export function isThreadRoutePathname(pathname: string): boolean {
     pathname === "/settings" ||
     pathname.startsWith("/settings/") ||
     pathname.startsWith("/plugins") ||
+    pathname.startsWith("/automations") ||
     pathname.startsWith("/kanban") ||
     pathname.startsWith("/workspace") ||
     pathname.startsWith("/worldcup")

@@ -11,7 +11,7 @@ import {
 import ShortcutsDialog from "../components/ShortcutsDialog";
 import { RecentViewSwitcher } from "../components/RecentViewSwitcher";
 import { AppTopBar } from "../components/thread-tabs/AppTopBar";
-import { AppTopBarIslands } from "../components/thread-tabs/AppTopBarIslands";
+import { AppTopBarThreadActionsIsland } from "../components/thread-tabs/AppTopBarIslands";
 import { AppChromeOverlays } from "../components/app-chrome/AppChromeOverlays";
 import { AppChromeProvider } from "../components/app-chrome/AppChromeProvider";
 import { shouldRenderTerminalWorkspace } from "../components/ChatView.logic";
@@ -528,10 +528,10 @@ function ChatRouteLayout() {
           <div className="chat-content-card-backing relative flex h-svh min-h-0 min-w-0 flex-1 flex-col">
             {isEditorView ? null : <AppTopBar />}
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-background-surface)]">
-              {isEditorView ? null : <AppTopBarIslands />}
               <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-background-surface)]">
                 <Outlet />
               </div>
+              {isEditorView ? null : <AppTopBarThreadActionsIsland />}
             </div>
           </div>
         </ChatChromeActionsProvider>

@@ -59,7 +59,6 @@ import {
   useAppSettings,
 } from "../appSettings";
 import { APP_VERSION } from "../branding";
-import { useDesktopTopBarTrafficLightGutterClassName } from "../hooks/useDesktopTopBarGutter";
 import { ProviderOptionLabel } from "../components/ProviderIcon";
 import {
   Autocomplete,
@@ -95,11 +94,6 @@ import {
   CHAT_CONTENT_CARD_CLASS_NAME,
   CHAT_MAIN_VIEWPORT_SHELL_CLASS_NAME,
 } from "../components/chat/composerPickerStyles";
-import {
-  CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-  CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-} from "../components/chat/chatHeaderControls";
-import { SidebarHeaderNavigationControls } from "../components/SidebarHeaderNavigationControls";
 import { RouteInsetSurface } from "../components/RouteInsetSurface";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -629,7 +623,6 @@ function SettingsRouteView() {
 
   const { isDefaultActiveTheme, resetAllThemes, resolvedTheme, theme, setTheme } = useTheme();
   const { settings, defaults, updateSettings, resetSettings } = useAppSettings();
-  const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
   const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
@@ -3271,28 +3264,6 @@ function SettingsRouteView() {
       )}
     >
       <RouteInsetSurface surfaceClassName={SETTINGS_PAGE_BACKGROUND_CLASS_NAME}>
-        {/* Companion sidebar trigger so settings is reachable-and-exitable even when the
-          sidebar is collapsed (web/mobile have no global Back arrow). Pinned to the
-          card's top-left — at the same header height + traffic-light gutter as the
-          chat/workspace headers — so the collapsed-state toggle sits by the traffic
-          lights instead of floating in the centered settings body. It renders nothing
-          while the sidebar is open (SidebarHeaderNavigationControls returns null), so it
-          adds no navigation chrome in the common (open) state and never shifts the centered
-          content (hence absolute, not a layout-occupying header row). The strip stays a
-          drag-region so the Windows frameless window can be moved by its top edge; the
-          caption buttons themselves are a separate fixed cluster (see root route). */}
-        <div
-          className={cn(
-            "drag-region absolute inset-x-0 top-0 z-10 flex items-center",
-            CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-            CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-            desktopTopBarTrafficLightGutterClassName,
-          )}
-        >
-          <div className="pointer-events-auto">
-            <SidebarHeaderNavigationControls />
-          </div>
-        </div>
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto">
             {activeSection === "profile" ? (
