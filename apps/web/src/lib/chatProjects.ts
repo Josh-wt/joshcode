@@ -8,11 +8,93 @@ import type { Project } from "../types";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
 import { getThreadFromState } from "../threadDerivation";
+import {
+  extractDuplicateProjectCreateProjectId,
+  isDuplicateProjectCreateError,
+} from "./projectCreateRecovery";
 import { resolveServerChatWorkspaceRoot, type ServerWorkspacePaths } from "./serverWorkspacePaths";
 import { newCommandId, newProjectId } from "./utils";
 
 const pendingHomeChatCreationByWorkspaceRoot = new Map<string, Promise<ProjectId | null>>();
 const pendingHomeChatFixupByWorkspaceRoot = new Map<string, Promise<void>>();
+
+interface HomeChatContainerCandidate {
+  readonly id?: ProjectId | undefined;
+  readonly kind?: Project["kind"] | undefined;
+  readonly cwd?: string | undefined;
+  readonly workspaceRoot?: string | undefined;
+  readonly name?: string | undefined;
+  readonly remoteName?: string | undefined;
+  readonly title?: string | undefined;
+}
+
+async function updateHomeChatProjectMetadata(
+  api: NonNullable<ReturnType<typeof readNativeApi>>,
+  projectId: ProjectId,
+): Promise<void> {
+  await api.orchestration.dispatchCommand({
+    type: "project.meta.update",
+    commandId: newCommandId(),
+    projectId,
+    kind: "chat",
+    title: "Home",
+  });
+}
+
+function isHomeChatContainerCandidate(
+  project: HomeChatContainerCandidate | null | undefined,
+  paths: ServerWorkspacePaths,
+): boolean {
+  const cwd = project?.cwd ?? project?.workspaceRoot ?? "";
+  if (!cwd) {
+    return false;
+  }
+
+  const title = project?.title ?? "";
+  return isHomeChatContainerProject(
+    {
+      cwd,
+      kind: project?.kind ?? "project",
+      name: project?.name ?? title,
+      remoteName: project?.remoteName ?? title,
+    },
+    paths,
+  );
+}
+
+function findHomeChatContainerCandidateById<T extends HomeChatContainerCandidate>(
+  projects: readonly T[],
+  projectId: ProjectId,
+  paths: ServerWorkspacePaths,
+): T | null {
+  return (
+    projects.find(
+      (project) => project.id === projectId && isHomeChatContainerCandidate(project, paths),
+    ) ?? null
+  );
+}
+
+async function findDuplicateHomeChatContainer(
+  api: NonNullable<ReturnType<typeof readNativeApi>>,
+  projectId: ProjectId,
+  paths: ServerWorkspacePaths,
+): Promise<HomeChatContainerCandidate | null> {
+  const localProject = findHomeChatContainerCandidateById(
+    useStore.getState().projects,
+    projectId,
+    paths,
+  );
+  if (localProject) {
+    return localProject;
+  }
+
+  const snapshot = await api.orchestration.getShellSnapshot().catch(() => null);
+  if (!snapshot) {
+    return null;
+  }
+
+  return findHomeChatContainerCandidateById(snapshot.projects, projectId, paths);
+}
 
 function matchesLegacyHomeChatWorkspaceRoot(
   project: Pick<Project, "cwd">,
@@ -62,7 +144,9 @@ function hasThreadsForProject(projectId: ProjectId): boolean {
     .some((thread) => thread?.projectId === projectId);
 }
 
-function scoreHomeChatProject(project: Project, input: ServerWorkspacePaths): number {
+function scoreHomeChatProject<
+  T extends Pick<Project, "id" | "kind" | "cwd" | "name" | "remoteName">,
+>(project: T, input: ServerWorkspacePaths): number {
   const homeDir = input.homeDir?.trim() ?? "";
   let score = 0;
   if (hasThreadsForProject(project.id)) score += 8;
@@ -79,6 +163,41 @@ export function findHomeChatContainerProject<
     return null;
   }
   return projects.find((project) => isHomeChatContainerProject(project, paths)) ?? null;
+}
+
+export function resolveHomeChatContainerGrouping<
+  T extends Pick<Project, "id" | "cwd" | "kind" | "name" | "remoteName">,
+>(
+  projects: readonly T[],
+  paths: ServerWorkspacePaths,
+): {
+  canonicalProjectId: ProjectId | null;
+  projectIdAliases: ReadonlyMap<ProjectId, ProjectId>;
+} {
+  const chatContainers = projects.filter((project) => isHomeChatContainerProject(project, paths));
+  if (chatContainers.length === 0) {
+    return { canonicalProjectId: null, projectIdAliases: new Map() };
+  }
+
+  const canonical =
+    [...chatContainers].sort(
+      (left, right) => scoreHomeChatProject(right, paths) - scoreHomeChatProject(left, paths),
+    )[0] ?? null;
+  if (!canonical) {
+    return { canonicalProjectId: null, projectIdAliases: new Map() };
+  }
+
+  const projectIdAliases = new Map<ProjectId, ProjectId>();
+  for (const project of chatContainers) {
+    if (project.id !== canonical.id) {
+      projectIdAliases.set(project.id, canonical.id);
+    }
+  }
+
+  return {
+    canonicalProjectId: canonical.id,
+    projectIdAliases,
+  };
 }
 
 function findCanonicalHomeProject(input: ServerWorkspacePaths): {
@@ -104,9 +223,7 @@ function findCanonicalHomeProject(input: ServerWorkspacePaths): {
 
   const duplicateProjectIds = homeProjects
     .filter((project) => project.id !== canonicalProject.id)
-    .flatMap((project) => {
-      return hasThreadsForProject(project.id) ? [] : [project.id];
-    });
+    .map((project) => project.id);
 
   return {
     canonicalProjectId: canonicalProject.id,
@@ -128,16 +245,25 @@ async function fixupHomeChatProject(input: ServerWorkspacePaths): Promise<void> 
   }
 
   if (needsKindFixup) {
-    await api.orchestration.dispatchCommand({
-      type: "project.meta.update",
-      commandId: newCommandId(),
-      projectId: canonicalProjectId,
-      kind: "chat",
-      title: "Home",
-    });
+    await updateHomeChatProjectMetadata(api, canonicalProjectId);
   }
 
   for (const duplicateProjectId of duplicateProjectIds) {
+    const threads = (useStore.getState().threadIds ?? [])
+      .map((threadId) => getThreadFromState(useStore.getState(), threadId))
+      .filter(
+        (thread): thread is NonNullable<ReturnType<typeof getThreadFromState>> =>
+          thread != null && thread.projectId === duplicateProjectId,
+      );
+    for (const thread of threads) {
+      await api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: thread.id,
+        projectId: canonicalProjectId,
+      });
+    }
+
     await api.orchestration.dispatchCommand({
       type: "project.delete",
       commandId: newCommandId(),
@@ -187,16 +313,34 @@ export async function ensureHomeChatProject(
 
   const creationPromise = (async () => {
     const projectId = newProjectId();
-    await api.orchestration.dispatchCommand({
-      type: "project.create",
-      commandId: newCommandId(),
-      projectId,
-      kind: "chat",
-      title: "Home",
-      workspaceRoot: placeholderWorkspaceRoot,
-      createdAt: new Date().toISOString(),
-    });
-    return projectId;
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "project.create",
+        commandId: newCommandId(),
+        projectId,
+        kind: "chat",
+        title: "Home",
+        workspaceRoot: placeholderWorkspaceRoot,
+        createdAt: new Date().toISOString(),
+      });
+      return projectId;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isDuplicateProjectCreateError(message)) {
+        const duplicateProjectId = extractDuplicateProjectCreateProjectId(message);
+        if (duplicateProjectId) {
+          const homeProjectId = duplicateProjectId as ProjectId;
+          const duplicateProject = await findDuplicateHomeChatContainer(api, homeProjectId, paths);
+          if (duplicateProject) {
+            if (duplicateProject.kind !== "chat") {
+              await updateHomeChatProjectMetadata(api, homeProjectId);
+            }
+            return homeProjectId;
+          }
+        }
+      }
+      throw error;
+    }
   })().finally(() => {
     pendingHomeChatCreationByWorkspaceRoot.delete(workspaceRoot);
   });

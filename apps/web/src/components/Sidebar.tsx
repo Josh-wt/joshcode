@@ -3,25 +3,18 @@
 // Exports: Sidebar
 
 import {
-  ArchiveIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  CopyIcon,
   DisposableThreadIcon,
-  ExternalLinkIcon,
   FolderIcon,
-  FolderOpenIcon,
   GitMergedSimpleIcon,
   GitPullRequestIcon,
   KanbanIcon,
   type LucideIcon,
   NewThreadIcon,
-  PencilIcon,
   PinIcon,
-  PlayIcon,
   SearchIcon,
   SettingsIcon,
-  StopFilledIcon,
   TerminalIcon,
   Trash2,
   TriangleAlertIcon,
@@ -88,6 +81,11 @@ import {
   type SidebarThreadSortOrder,
   useAppSettings,
 } from "../appSettings";
+import { useAppChromeStore } from "../appChromeStore";
+import {
+  type ProjectContextMenuId,
+  type ProjectContextMenuState,
+} from "../appChromeContext";
 import { isElectron } from "../env";
 import { showConfirmDialogFallback } from "../confirmDialogFallback";
 import { formatRelativeTime } from "../lib/relativeTime";
@@ -103,21 +101,15 @@ import {
   threadJumpIndexFromCommand,
 } from "../keybindings";
 import {
-  createAllThreadsSelector,
   createSidebarDisplayThreadsSelector,
   createSidebarThreadSummariesSelector,
   createThreadSelector,
 } from "../storeSelectors";
 import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
-import {
-  gitRemoveWorktreeMutationOptions,
+import { gitRemoveWorktreeMutationOptions,
   gitResolvePullRequestQueryOptions,
   gitStatusQueryOptions,
 } from "../lib/gitReactQuery";
-import {
-  providerComposerCapabilitiesQueryOptions,
-  supportsThreadImport,
-} from "../lib/providerDiscoveryReactQuery";
 import { resolveCurrentProjectTargetId } from "../lib/projectShortcutTargets";
 import { projectDiscoverScriptsQueryOptions } from "../lib/projectReactQuery";
 import {
@@ -129,6 +121,7 @@ import {
 } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { isHomeChatContainerProject, prewarmHomeChatProject } from "../lib/chatProjects";
+import { isThreadRoutePathname } from "./thread-tabs/threadTabBar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { resolveThreadEnvironmentPresentation } from "../lib/threadEnvironment";
 import { dispatchThreadRename } from "../lib/threadRename";
@@ -147,14 +140,8 @@ import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
 import { SidebarGlyph, sidebarGlyphClass } from "./sidebarGlyphs";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
 import { ThreadRunningSpinner } from "./ThreadRunningSpinner";
-import { RenameDialog } from "./RenameDialog";
-import { RenameThreadDialog } from "./RenameThreadDialog";
 import { terminalRuntimeRegistry } from "./terminal/terminalRuntimeRegistry";
-import {
-  SidebarSearchPalette,
-  type ImportProviderKind,
-  type SidebarSearchPaletteMode,
-} from "./SidebarSearchPalette";
+import type { ImportProviderKind } from "./SidebarSearchPalette";
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useThreadHandoff } from "../hooks/useThreadHandoff";
@@ -188,15 +175,6 @@ import {
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "./ui/dialog";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import {
   Menu,
@@ -300,7 +278,6 @@ import {
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
 import { SidebarSubscriptionUsage } from "./sidebar/SidebarSubscriptionUsage";
 import { SIDEBAR_SEGMENTED_PICKER_ACTIVE_CLASS_NAME } from "./chat/composerPickerStyles";
-import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import {
   resolveSplitViewFocusedThreadId,
   resolveSplitViewPaneIdForThread,
@@ -315,11 +292,7 @@ import { usePinnedThreadsStore } from "../pinnedThreadsStore";
 import { useThreadDetailPrewarm } from "../threadDetailPrewarm";
 import { retainThreadDetailSubscription } from "../threadDetailSubscriptionRetention";
 import { useWorkspaceStore, workspaceThreadId } from "../workspaceStore";
-import type {
-  SidebarSearchAction,
-  SidebarSearchProject,
-  SidebarSearchThread,
-} from "./SidebarSearchPalette.logic";
+import type { SidebarSearchProject } from "./SidebarSearchPalette.logic";
 import { useFocusedChatContext } from "../focusedChatContext";
 import {
   waitForRecoverableProjectForDuplicateCreate,
@@ -355,54 +328,6 @@ const DebugFeatureFlagsMenu = import.meta.env.DEV
       })),
     )
   : null;
-
-type ProjectContextMenuId =
-  | "open-in-finder"
-  | "open-in-kanban"
-  | "copy-path"
-  | "start-dev"
-  | "stop-dev"
-  | "open-dev-server"
-  | "rename"
-  | "toggle-pin"
-  | "archive-threads"
-  | "delete-threads"
-  | "delete";
-
-type ProjectContextMenuState = {
-  projectId: ProjectId;
-  position: { x: number; y: number };
-};
-
-const PROJECT_CONTEXT_MENU_PANEL_CLASS_NAME = "w-48 min-w-48";
-const PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME =
-  "text-[var(--color-text-foreground)] data-highlighted:text-[var(--color-text-foreground)]";
-const PROJECT_CONTEXT_MENU_ICON_CLASS_NAME =
-  "inline-flex size-3.5 shrink-0 items-center justify-center text-[var(--color-text-foreground-secondary)] [&>svg]:size-3.5 [&>[data-slot=central-icon]]:size-3.5";
-
-// Gives Base UI a zero-size virtual anchor exactly where the right-click happened.
-function createClientPointMenuAnchor(position: { x: number; y: number }) {
-  return {
-    getBoundingClientRect: () => ({
-      x: position.x,
-      y: position.y,
-      width: 0,
-      height: 0,
-      top: position.y,
-      right: position.x,
-      bottom: position.y,
-      left: position.x,
-    }),
-  };
-}
-
-function ProjectContextMenuIcon({ icon: Icon }: { icon: LucideIcon }) {
-  return (
-    <span className={PROJECT_CONTEXT_MENU_ICON_CLASS_NAME}>
-      <Icon aria-hidden="true" />
-    </span>
-  );
-}
 
 function firstLocalServerUrl(server: ServerLocalServerProcess): string | null {
   return server.addresses.find((address) => address.url)?.url ?? null;
@@ -1175,7 +1100,7 @@ function SortableWorkspaceItem({
   );
 }
 
-export default function Sidebar() {
+export default function Sidebar({ chromeOnly = false }: { chromeOnly?: boolean }) {
   const [showDebugFeatureFlagsMenu, setShowDebugFeatureFlagsMenu] = useState(
     readDebugFeatureFlagsMenuVisibility,
   );
@@ -1229,6 +1154,8 @@ export default function Sidebar() {
   });
   const isOnWorkspace = pathname.startsWith("/workspace");
   const isOnKanban = pathname.startsWith("/kanban");
+  const isOnThreadRoute = isThreadRoutePathname(pathname);
+  const showProjectThreadNavigation = !isOnThreadRoute;
   const { settings: appSettings, updateSettings } = useAppSettings();
   // The Threads/Projects tab is always available; only the optional Workspace tab
   // and the standalone Chats footer list can be hidden from Settings.
@@ -1337,9 +1264,10 @@ export default function Sidebar() {
   const { activeProjectId: focusedProjectId } = useFocusedChatContext();
   const [addingProject, setAddingProject] = useState(false);
   const [newCwd, setNewCwd] = useState("");
-  const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
-  const [searchPaletteMode, setSearchPaletteMode] = useState<SidebarSearchPaletteMode>("search");
-  const [searchPaletteInitialQuery, setSearchPaletteInitialQuery] = useState<string | null>(null);
+  const searchPaletteOpen = useAppChromeStore((state) => state.searchPaletteOpen);
+  const searchPaletteMode = useAppChromeStore((state) => state.searchPaletteMode);
+  const toggleSearchPalette = useAppChromeStore((state) => state.toggleSearchPalette);
+  const openSearchPalette = useAppChromeStore((state) => state.openSearchPalette);
   const [projectRunDialogProjectId, setProjectRunDialogProjectId] = useState<ProjectId | null>(
     null,
   );
@@ -3588,6 +3516,24 @@ export default function Sidebar() {
         copyPathToClipboard(project.cwd);
         return;
       }
+      if (clicked === "new-terminal-thread") {
+        void handleNewThread(projectId, {
+          envMode: resolveSidebarNewThreadEnvMode({
+            defaultEnvMode: appSettings.defaultThreadEnvMode,
+          }),
+          entryPoint: "terminal",
+        });
+        return;
+      }
+      if (clicked === "new-temporary-thread") {
+        void handleNewThread(projectId, {
+          envMode: resolveSidebarNewThreadEnvMode({
+            defaultEnvMode: appSettings.defaultThreadEnvMode,
+          }),
+          temporary: true,
+        });
+        return;
+      }
       if (clicked === "start-dev") {
         setProjectRunDialogProjectId(projectId);
         return;
@@ -3674,11 +3620,13 @@ export default function Sidebar() {
       }
     },
     [
+      appSettings.defaultThreadEnvMode,
       archiveAllThreadsInProject,
       clearProjectDraftThreads,
       copyPathToClipboard,
       deleteProjectThreads,
       deleteAllThreadsInProject,
+      handleNewThread,
       handleOpenProjectRunServer,
       handleStopProjectRun,
       navigate,
@@ -4921,7 +4869,10 @@ export default function Sidebar() {
             leadingPrStatus && "pl-8",
             isSubagentThread
               ? "pr-7.5"
-              : resolveThreadRowTrailingReserveClass(showCompactMeta ? rightMetaChips.length : 0),
+              : resolveThreadRowTrailingReserveClass({
+                  metaChipCount: showCompactMeta ? rightMetaChips.length : 0,
+                  hasTrailingGlyph: Boolean(threadStatus) || Boolean(threadJumpLabel),
+                }),
             resolveThreadDragRowClassName(thread.id),
           )}
           onClick={(event) => {
@@ -5416,9 +5367,7 @@ export default function Sidebar() {
       ) {
         event.preventDefault();
         event.stopPropagation();
-        setSearchPaletteMode("search");
-        setSearchPaletteInitialQuery(null);
-        setSearchPaletteOpen((prev) => !prev || searchPaletteMode !== "search");
+        toggleSearchPalette("search");
         return;
       }
 
@@ -5455,25 +5404,22 @@ export default function Sidebar() {
       if (command === "sidebar.search") {
         event.preventDefault();
         event.stopPropagation();
-        setSearchPaletteMode("search");
-        setSearchPaletteInitialQuery(null);
-        setSearchPaletteOpen((prev) => !prev || searchPaletteMode !== "search");
+        toggleSearchPalette("search");
         return;
       }
       if (command === "sidebar.addProject") {
         event.preventDefault();
         event.stopPropagation();
-        setSearchPaletteMode("search");
-        setSearchPaletteInitialQuery(getInitialBrowseQuery(homeDir));
-        setSearchPaletteOpen(true);
+        openSearchPalette({
+          mode: "search",
+          initialQuery: getInitialBrowseQuery(homeDir),
+        });
         return;
       }
       if (command === "sidebar.importThread") {
         event.preventDefault();
         event.stopPropagation();
-        setSearchPaletteMode("import");
-        setSearchPaletteInitialQuery(null);
-        setSearchPaletteOpen((prev) => !prev || searchPaletteMode !== "import");
+        toggleSearchPalette("import");
         return;
       }
       if (command === "settings.usage") {
@@ -5697,20 +5643,11 @@ export default function Sidebar() {
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.new") ??
     shortcutLabelForCommand(keybindings, "chat.newLatestProject");
-  const newChatShortcutLabel =
-    shortcutLabelForCommand(keybindings, "chat.newChat") ??
-    shortcutLabelForCommand(keybindings, "chat.newLocal");
   const newTerminalThreadShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newTerminal");
   const searchShortcutLabel =
     shortcutLabelForCommand(keybindings, "sidebar.search") ??
     (isMacPlatform(navigator.platform) ? "⌘K" : "Ctrl+K");
-  const importThreadShortcutLabel =
-    shortcutLabelForCommand(keybindings, "sidebar.importThread") ??
-    (isMacPlatform(navigator.platform) ? "⌘I" : "Ctrl+I");
-  const addProjectShortcutLabel =
-    shortcutLabelForCommand(keybindings, "sidebar.addProject") ??
-    (isMacPlatform(navigator.platform) ? "⇧⌘O" : "Ctrl+Shift+O");
-  const usageSettingsShortcutLabel = shortcutLabelForCommand(keybindings, "settings.usage");
+
   const searchPaletteProjects = useMemo<SidebarSearchProject[]>(
     () =>
       projects.map((project) => ({
@@ -5724,67 +5661,6 @@ export default function Sidebar() {
         updatedAt: project.updatedAt,
       })),
     [projects],
-  );
-  const searchPaletteActions = useMemo<SidebarSearchAction[]>(
-    () => [
-      {
-        id: "new-chat",
-        label: "New chat",
-        description: "Open the new chat landing screen.",
-        keywords: ["chat", "new", "home"],
-        shortcutLabel: newChatShortcutLabel,
-      },
-      {
-        id: "new-thread",
-        label: "New thread",
-        description: "Start a fresh thread in the current project.",
-        keywords: ["thread", "new", "project"],
-        shortcutLabel: newThreadShortcutLabel,
-      },
-      {
-        id: "add-project",
-        label: "Add project",
-        description: "Open a repository or folder in the sidebar.",
-        keywords: ["folder", "repo", "repository", "open"],
-        shortcutLabel: addProjectShortcutLabel,
-      },
-      {
-        id: "import-thread",
-        label: "Import thread from...",
-        description: "Attach a local thread to an existing provider session.",
-        keywords: [
-          "import",
-          "resume",
-          "thread",
-          "session",
-          "codex",
-          "claude",
-          "cursor",
-          "opencode",
-        ],
-        shortcutLabel: importThreadShortcutLabel,
-      },
-      {
-        id: "settings",
-        label: "Settings",
-        description: "Open app settings.",
-        keywords: ["preferences", "config"],
-      },
-      {
-        id: "usage-settings",
-        label: "Usage settings",
-        description: "Open provider usage and remaining credits.",
-        keywords: ["usage", "limits", "credits", "quota", "providers"],
-        shortcutLabel: usageSettingsShortcutLabel,
-      },
-    ],
-    [
-      addProjectShortcutLabel,
-      importThreadShortcutLabel,
-      newChatShortcutLabel,
-      newThreadShortcutLabel,
-      usageSettingsShortcutLabel,
-    ],
   );
 
   const handleDesktopUpdateButtonClick = useCallback(() => {
@@ -5998,13 +5874,6 @@ export default function Sidebar() {
         : [],
     [projectContextMenuState, sidebarThreads],
   );
-  const projectContextMenuAnchor = useMemo(
-    () =>
-      projectContextMenuState
-        ? createClientPointMenuAnchor(projectContextMenuState.position)
-        : null,
-    [projectContextMenuState],
-  );
   const projectContextMenuHasAnyThreads = projectContextMenuThreads.length > 0;
   const projectContextMenuHasArchivableThreads = projectContextMenuThreads.some(
     (thread) => thread.archivedAt == null,
@@ -6020,9 +5889,20 @@ export default function Sidebar() {
     : null;
   const projectContextMenuHasOpenServer =
     projectContextMenuServer !== null && firstLocalServerUrl(projectContextMenuServer) !== null;
+  const searchPaletteProjectById = useMemo(
+    () =>
+      new Map(
+        projects.map(
+          (project) => [project.id, { name: project.name, remoteName: project.remoteName }] as const,
+        ),
+      ),
+    [projects],
+  );
 
   return (
     <>
+      {chromeOnly ? null : (
+        <>
       {isElectron ? (
         <>
           <SidebarHeader
@@ -6112,7 +5992,7 @@ export default function Sidebar() {
                       label="Search"
                       active={searchPaletteOpen}
                       onClick={() => {
-                        setSearchPaletteOpen(true);
+                        openSearchPalette({ mode: "search" });
                       }}
                       shortcutLabel={searchShortcutLabel}
                     />
@@ -6242,7 +6122,7 @@ export default function Sidebar() {
                   </SidebarMenu>
                 </DndContext>
               </SidebarGroup>
-            ) : (
+            ) : showProjectThreadNavigation ? (
               <SidebarGroup className="px-1.5 py-1.5">
                 {pinnedThreads.length > 0 ? (
                   <div className="mb-3">
@@ -6440,6 +6320,19 @@ export default function Sidebar() {
                   </div>
                 )}
               </SidebarGroup>
+            ) : (
+              <SidebarGroup className="px-1.5 py-1.5">
+                <div className="px-2 py-2 text-[length:var(--app-font-size-ui,12px)] leading-relaxed text-muted-foreground/65">
+                  Threads are in the tab bar above the chat. Use Search to jump to any thread.
+                </div>
+                <SidebarMenu className="gap-0.5">
+                  <SidebarPrimaryAction
+                    icon={FolderIcon}
+                    label="Add project"
+                    onClick={handleStartAddProject}
+                  />
+                </SidebarMenu>
+              </SidebarGroup>
             )}
           </>
         )}
@@ -6447,7 +6340,7 @@ export default function Sidebar() {
 
       <SidebarFooter className="gap-2 p-2 font-system-ui">
         {!isOnSettings ? <SidebarSubscriptionUsage /> : null}
-        {!isOnSettings && chatsSectionVisible ? (
+        {!isOnSettings && chatsSectionVisible && showProjectThreadNavigation ? (
           <div className="group/collapsible">
             <div
               className={cn(
@@ -6609,391 +6502,8 @@ export default function Sidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
-
-      {projectContextMenuState && projectContextMenuProject && projectContextMenuAnchor ? (
-        <Menu
-          open
-          onOpenChange={(open) => {
-            if (!open) {
-              setProjectContextMenuState(null);
-            }
-          }}
-        >
-          <ComposerPickerMenuPopup
-            anchor={projectContextMenuAnchor}
-            align="start"
-            side="bottom"
-            sideOffset={0}
-            className={PROJECT_CONTEXT_MENU_PANEL_CLASS_NAME}
-          >
-            <MenuGroup>
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(
-                    projectContextMenuState.projectId,
-                    "open-in-finder",
-                  )
-                }
-              >
-                <ProjectContextMenuIcon icon={FolderOpenIcon} />
-                <span>Open in Finder</span>
-              </MenuItem>
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(
-                    projectContextMenuState.projectId,
-                    "open-in-kanban",
-                  )
-                }
-              >
-                <ProjectContextMenuIcon icon={KanbanIcon} />
-                <span>Open in Kanban</span>
-              </MenuItem>
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(
-                    projectContextMenuState.projectId,
-                    "copy-path",
-                  )
-                }
-              >
-                <ProjectContextMenuIcon icon={CopyIcon} />
-                <span>Copy Path</span>
-              </MenuItem>
-              <MenuSeparator />
-              {projectContextMenuIsRunning ? (
-                <MenuItem
-                  className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                  onClick={() =>
-                    void handleProjectContextMenuAction(
-                      projectContextMenuState.projectId,
-                      "stop-dev",
-                    )
-                  }
-                >
-                  <ProjectContextMenuIcon icon={StopFilledIcon} />
-                  <span>Stop dev</span>
-                </MenuItem>
-              ) : (
-                <MenuItem
-                  className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                  onClick={() =>
-                    void handleProjectContextMenuAction(
-                      projectContextMenuState.projectId,
-                      "start-dev",
-                    )
-                  }
-                >
-                  <ProjectContextMenuIcon icon={PlayIcon} />
-                  <span>Start dev</span>
-                </MenuItem>
-              )}
-              {projectContextMenuHasOpenServer ? (
-                <MenuItem
-                  className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                  onClick={() =>
-                    void handleProjectContextMenuAction(
-                      projectContextMenuState.projectId,
-                      "open-dev-server",
-                    )
-                  }
-                >
-                  <ProjectContextMenuIcon icon={ExternalLinkIcon} />
-                  <span>Open dev server</span>
-                </MenuItem>
-              ) : null}
-              <MenuSeparator />
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(projectContextMenuState.projectId, "rename")
-                }
-              >
-                <ProjectContextMenuIcon icon={PencilIcon} />
-                <span>Edit name</span>
-              </MenuItem>
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(
-                    projectContextMenuState.projectId,
-                    "toggle-pin",
-                  )
-                }
-              >
-                <ProjectContextMenuIcon icon={PinIcon} />
-                <span>{projectContextMenuIsPinned ? "Unpin project" : "Pin project"}</span>
-              </MenuItem>
-              {projectContextMenuHasArchivableThreads || projectContextMenuHasAnyThreads ? (
-                <MenuSeparator />
-              ) : null}
-              {projectContextMenuHasArchivableThreads ? (
-                <MenuItem
-                  className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                  onClick={() =>
-                    void handleProjectContextMenuAction(
-                      projectContextMenuState.projectId,
-                      "archive-threads",
-                    )
-                  }
-                >
-                  <ProjectContextMenuIcon icon={ArchiveIcon} />
-                  <span>Archive threads</span>
-                </MenuItem>
-              ) : null}
-              {projectContextMenuHasAnyThreads ? (
-                <MenuItem
-                  className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                  onClick={() =>
-                    void handleProjectContextMenuAction(
-                      projectContextMenuState.projectId,
-                      "delete-threads",
-                    )
-                  }
-                >
-                  <ProjectContextMenuIcon icon={Trash2} />
-                  <span>Delete threads</span>
-                </MenuItem>
-              ) : null}
-              <MenuSeparator />
-              <MenuItem
-                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
-                onClick={() =>
-                  void handleProjectContextMenuAction(projectContextMenuState.projectId, "delete")
-                }
-              >
-                <ProjectContextMenuIcon icon={XIcon} />
-                <span>Remove</span>
-              </MenuItem>
-            </MenuGroup>
-          </ComposerPickerMenuPopup>
-        </Menu>
-      ) : null}
-
-      <Dialog
-        open={projectRunDialogProjectId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeProjectRunDialog();
-          }
-        }}
-      >
-        <DialogPopup surface="solid" className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <PlayIcon className="size-4 text-emerald-500" />
-              Start dev
-            </DialogTitle>
-            <DialogDescription>
-              {projectRunDialogProject ? projectRunDialogProject.name : "Project"}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel className="space-y-2">
-            <label
-              htmlFor="project-run-command-input"
-              className="block text-[length:var(--app-font-size-ui-xs,10px)] font-medium uppercase tracking-[0.08em] text-[var(--color-text-foreground-secondary)]"
-            >
-              Command
-            </label>
-            <Input
-              id="project-run-command-input"
-              autoFocus
-              spellCheck={false}
-              autoComplete="off"
-              autoCapitalize="off"
-              autoCorrect="off"
-              placeholder="e.g. npm run dev"
-              className="font-mono"
-              value={projectRunDialogCommandDraft}
-              aria-invalid={projectRunDialogCommandIsValid ? undefined : true}
-              onChange={(event) => setProjectRunDialogCommandDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  handleConfirmProjectRun();
-                }
-              }}
-            />
-            {projectRunDialogCommandIsValid ? null : (
-              <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-destructive">
-                Enter a command to run.
-              </p>
-            )}
-          </DialogPanel>
-          <DialogFooter>
-            <Button variant="outline" onClick={closeProjectRunDialog}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmProjectRun}
-              disabled={!projectRunDialogCommandIsValid || Boolean(projectRunDialogExistingRun)}
-            >
-              <PlayIcon className="size-4" />
-              Run
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
-
-      <RenameThreadDialog
-        open={renameDialogThreadId !== null}
-        currentTitle={
-          renameDialogThreadId ? (sidebarThreadSummaryById[renameDialogThreadId]?.title ?? "") : ""
-        }
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setRenameDialogThreadId(null);
-        }}
-        onSave={(newTitle) => {
-          if (renameDialogThreadId === null) return;
-          const target = sidebarThreadSummaryById[renameDialogThreadId];
-          if (!target) return;
-          void commitRename(target.id, newTitle, target.title);
-        }}
-      />
-
-      <RenameDialog
-        open={renameProjectDialogId !== null && renameProjectDialogProject !== null}
-        title="Rename project"
-        description="Keep it short and recognizable."
-        initialValue={
-          renameProjectDialogProject?.localName ?? renameProjectDialogProject?.name ?? ""
-        }
-        allowEmpty
-        placeholder={renameProjectDialogProject?.folderName}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setRenameProjectDialogId(null);
-        }}
-        onSave={(nextName) => {
-          if (!renameProjectDialogProject) return;
-          handleRenameProjectSave(
-            renameProjectDialogProject.id,
-            nextName,
-            renameProjectDialogProject.localName,
-          );
-        }}
-      />
-
-      {searchPaletteOpen ? (
-        <SidebarSearchPaletteController
-          open={searchPaletteOpen}
-          mode={searchPaletteMode}
-          initialBrowseQuery={searchPaletteInitialQuery}
-          onModeChange={setSearchPaletteMode}
-          onOpenChange={(open) => {
-            setSearchPaletteOpen(open);
-            if (!open) {
-              setSearchPaletteMode("search");
-              setSearchPaletteInitialQuery(null);
-            }
-          }}
-          actions={searchPaletteActions}
-          projects={searchPaletteProjects}
-          projectById={projectById}
-          onCreateChat={() => void handleCreateHomeChat()}
-          onCreateThread={handlePrimaryNewThread}
-          onAddProjectPath={addProjectFromPath}
-          homeDir={homeDir}
-          onOpenSettings={() => {
-            void navigate({ to: "/settings" });
-          }}
-          onOpenUsageSettings={() => {
-            void navigate({
-              to: "/settings",
-              search: { section: "usage" },
-            });
-          }}
-          onOpenProject={handleOpenProjectFromSearch}
-          onImportThread={handleImportThread}
-          onOpenThread={(threadId) => {
-            activateThreadFromSidebarIntent(ThreadId.makeUnsafe(threadId));
-          }}
-        />
-      ) : null}
+        </>
+      )}
     </>
-  );
-}
-
-function SidebarSearchPaletteController(props: {
-  open: boolean;
-  mode: SidebarSearchPaletteMode;
-  onModeChange: (mode: SidebarSearchPaletteMode) => void;
-  onOpenChange: (open: boolean) => void;
-  actions: readonly SidebarSearchAction[];
-  projects: readonly SidebarSearchProject[];
-  projectById: ReadonlyMap<ProjectId, { name: string; remoteName: string }>;
-  onCreateChat: () => void;
-  onCreateThread: () => void;
-  onAddProjectPath: (path: string, options?: { createIfMissing?: boolean }) => Promise<void>;
-  homeDir: string | null;
-  initialBrowseQuery: string | null;
-  onOpenSettings: () => void;
-  onOpenUsageSettings: () => void;
-  onOpenProject: (projectId: string) => void;
-  onImportThread: (provider: ImportProviderKind, externalId: string) => Promise<void>;
-  onOpenThread: (threadId: string) => void;
-}) {
-  const selectAllThreads = useMemo(() => createAllThreadsSelector(), []);
-  const selectSidebarDisplayThreads = useMemo(() => createSidebarDisplayThreadsSelector(), []);
-  const importProviderCapabilityQueries = useQueries({
-    queries: (["codex", "claudeAgent", "cursor", "kilo", "opencode"] as const).map((provider) =>
-      providerComposerCapabilitiesQueryOptions(provider),
-    ),
-  });
-  const threads = useStore(selectAllThreads);
-  const sidebarDisplayThreads = useStore(selectSidebarDisplayThreads);
-  const importProviders: ReadonlyArray<ImportProviderKind> = (
-    ["codex", "claudeAgent", "cursor", "kilo", "opencode"] as const
-  ).filter((provider, index) => supportsThreadImport(importProviderCapabilityQueries[index]?.data));
-  const searchPaletteThreads = useMemo<SidebarSearchThread[]>(() => {
-    const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
-    return sidebarDisplayThreads.flatMap((threadSummary) => {
-      const thread = threadById.get(threadSummary.id);
-      if (!thread) {
-        return [];
-      }
-
-      return [
-        {
-          id: thread.id,
-          title: thread.title,
-          projectId: thread.projectId,
-          projectName: props.projectById.get(thread.projectId)?.name ?? "Unknown project",
-          projectRemoteName:
-            props.projectById.get(thread.projectId)?.remoteName ?? "Unknown project",
-          provider: thread.modelSelection.provider,
-          createdAt: thread.createdAt,
-          updatedAt: thread.updatedAt,
-          messages: thread.messages.map((message) => ({
-            text: message.text,
-          })),
-        },
-      ];
-    });
-  }, [props.projectById, sidebarDisplayThreads, threads]);
-
-  return (
-    <SidebarSearchPalette
-      open={props.open}
-      mode={props.mode}
-      onModeChange={props.onModeChange}
-      onOpenChange={props.onOpenChange}
-      actions={props.actions}
-      projects={props.projects}
-      threads={searchPaletteThreads}
-      onCreateChat={props.onCreateChat}
-      onCreateThread={props.onCreateThread}
-      onAddProjectPath={props.onAddProjectPath}
-      homeDir={props.homeDir}
-      initialBrowseQuery={props.initialBrowseQuery}
-      onOpenSettings={props.onOpenSettings}
-      onOpenUsageSettings={props.onOpenUsageSettings}
-      onOpenProject={props.onOpenProject}
-      importProviders={importProviders}
-      onImportThread={props.onImportThread}
-      onOpenThread={props.onOpenThread}
-    />
   );
 }

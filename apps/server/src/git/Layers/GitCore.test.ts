@@ -976,6 +976,20 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result._tag).toBe("Failure");
       }),
     );
+
+    it.effect("deletes an existing local branch", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const core = yield* GitCore;
+        yield* initRepoWithCommit(tmp);
+        yield* core.createBranch({ cwd: tmp, branch: "feature/delete-me" });
+
+        yield* core.deleteBranch({ cwd: tmp, branch: "feature/delete-me", force: true });
+
+        const branches = yield* core.listBranches({ cwd: tmp });
+        expect(branches.branches.some((branch) => branch.name === "feature/delete-me")).toBe(false);
+      }),
+    );
   });
 
   // ── renameGitBranch ──
@@ -2156,6 +2170,30 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result.branches.length).toBeGreaterThan(0);
         expect(result.branches[0]?.current).toBe(true);
         expect(didFailRecency).toBe(true);
+      }),
+    );
+
+    it.effect("refreshes remotes before listing when refreshRemotes is true", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(tmp, ["remote", "add", "origin", remote]);
+
+        const realGitCore = yield* GitCore;
+        let didFetchRemotes = false;
+        const core = yield* makeIsolatedGitCore((input) => {
+          if (input.args.join(" ") === "fetch --quiet --no-tags --all") {
+            didFetchRemotes = true;
+          }
+          return realGitCore.execute(input);
+        });
+
+        const result = yield* core.listBranches({ cwd: tmp, refreshRemotes: true });
+
+        expect(result.isRepo).toBe(true);
+        expect(didFetchRemotes).toBe(true);
       }),
     );
 

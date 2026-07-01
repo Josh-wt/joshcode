@@ -1,7 +1,7 @@
-import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
-import { useQuery } from "@tanstack/react-query";
+import type { ResolvedKeybindingsConfig, GitBranch } from "@t3tools/contracts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   goBackInAppHistory,
@@ -10,6 +10,10 @@ import {
 } from "../appNavigation";
 import ShortcutsDialog from "../components/ShortcutsDialog";
 import { RecentViewSwitcher } from "../components/RecentViewSwitcher";
+import { AppTopBar } from "../components/thread-tabs/AppTopBar";
+import { AppTopBarThreadActionsIsland } from "../components/thread-tabs/AppTopBarIslands";
+import { AppChromeOverlays } from "../components/app-chrome/AppChromeOverlays";
+import { AppChromeProvider } from "../components/app-chrome/AppChromeProvider";
 import { shouldRenderTerminalWorkspace } from "../components/ChatView.logic";
 import ThreadSidebar from "../components/Sidebar";
 import { isElectron } from "../env";
@@ -22,6 +26,12 @@ import {
   resolveCurrentProjectTargetId,
   resolveLatestProjectTargetId,
 } from "../lib/projectShortcutTargets";
+import { useAppSettings } from "../appSettings";
+import { gitQueryKeys } from "../lib/gitReactQuery";
+import {
+  resolveNewThreadInProjectOptions,
+  resolveWorktreeBaseBranchForProject,
+} from "../lib/newThreadInProject";
 import { resolveThreadEnvironmentMode } from "../lib/threadEnvironment";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
@@ -33,31 +43,11 @@ import { onServerMaintenanceUpdated } from "../wsNativeApi";
 import { useProviderStatusesForLocalConfig } from "~/hooks/useProviderStatusesForLocalConfig";
 import { resolveProviderSendAvailability } from "~/lib/providerAvailability";
 import { toastManager } from "~/components/ui/toast";
-import {
-  Sidebar,
-  SIDEBAR_OFFCANVAS_MOTION_CLASS,
-  SidebarInstanceProvider,
-  SidebarProvider,
-  SidebarRail,
-  useSidebar,
-} from "~/components/ui/sidebar";
-import type { SidebarResizableOptions } from "~/components/ui/sidebar";
-import { cn } from "~/lib/utils";
+import { SidebarProvider } from "~/components/ui/sidebar";
+import { ChatChromeActionsProvider } from "../chatChromeActionsContext";
+import { useAppChromeStore } from "../appChromeStore";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
-const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
-const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
-const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
-
-// Single source of truth for the thread sidebar resize behavior. Shared by <Sidebar>
-// and the detached content-seam <SidebarRail> (via SidebarInstanceProvider) so the
-// drag handle keeps working even though the rail lives outside <Sidebar> (above the card).
-const THREAD_SIDEBAR_RESIZABLE: SidebarResizableOptions = {
-  minWidth: THREAD_SIDEBAR_MIN_WIDTH,
-  shouldAcceptWidth: ({ nextWidth, wrapper }) =>
-    wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-  storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-};
 const MAINTENANCE_EVENT_STALE_MS = 5 * 60 * 1000;
 
 type MaintenanceToastId = ReturnType<typeof toastManager.add>;
@@ -71,7 +61,7 @@ function ThreadRetentionMaintenanceToast() {
         return;
       }
 
-      const { state, purgedCount, totalCount, freePageCount, error } = event.payload;
+      const { state, deletedCount, totalCount, error } = event.payload;
       const eventMs = Date.parse(event.payload.at);
       const isStaleEvent = Number.isFinite(eventMs)
         ? Date.now() - eventMs > MAINTENANCE_EVENT_STALE_MS
@@ -83,8 +73,8 @@ function ThreadRetentionMaintenanceToast() {
       if (state === "started") {
         toastIdRef.current = toastManager.add({
           type: "loading",
-          title: "Cleaning old chats...",
-          description: "Preparing background cleanup.",
+          title: "Hiding old chats...",
+          description: "Preparing background maintenance.",
           timeout: 0,
           data: { allowCrossThreadVisibility: true },
         });
@@ -96,41 +86,18 @@ function ThreadRetentionMaintenanceToast() {
           toastIdRef.current ??
           toastManager.add({
             type: "loading",
-            title: "Cleaning old chats...",
+            title: "Hiding old chats...",
             timeout: 0,
             data: { allowCrossThreadVisibility: true },
           });
         toastIdRef.current = toastId;
         toastManager.update(toastId, {
           type: "loading",
-          title: "Cleaning old chats...",
+          title: "Hiding old chats...",
           description:
             totalCount && totalCount > 0
-              ? `${purgedCount ?? 0} of ${totalCount} chats removed.`
-              : `${purgedCount ?? 0} chats removed.`,
-          timeout: 0,
-          data: { allowCrossThreadVisibility: true },
-        });
-        return;
-      }
-
-      if (state === "compacting") {
-        const toastId =
-          toastIdRef.current ??
-          toastManager.add({
-            type: "loading",
-            title: "Compacting chat database...",
-            timeout: 0,
-            data: { allowCrossThreadVisibility: true },
-          });
-        toastIdRef.current = toastId;
-        toastManager.update(toastId, {
-          type: "loading",
-          title: "Compacting chat database...",
-          description:
-            freePageCount && freePageCount > 0
-              ? "Reclaiming unused database space."
-              : "Finishing cleanup.",
+              ? `${deletedCount ?? 0} of ${totalCount} chats hidden.`
+              : `${deletedCount ?? 0} chats hidden.`,
           timeout: 0,
           data: { allowCrossThreadVisibility: true },
         });
@@ -143,7 +110,7 @@ function ThreadRetentionMaintenanceToast() {
         if (toastId) {
           toastManager.update(toastId, {
             type: "warning",
-            title: "Cleanup paused",
+            title: "Chat maintenance paused",
             description: error ?? "Old chats will be retried later.",
             timeout: 6000,
             data: { allowCrossThreadVisibility: true },
@@ -152,7 +119,7 @@ function ThreadRetentionMaintenanceToast() {
         }
         toastManager.add({
           type: "warning",
-          title: "Cleanup paused",
+          title: "Chat maintenance paused",
           description: error ?? "Old chats will be retried later.",
           timeout: 6000,
           data: { allowCrossThreadVisibility: true },
@@ -165,11 +132,11 @@ function ThreadRetentionMaintenanceToast() {
       if (!toastId) return;
       toastManager.update(toastId, {
         type: "success",
-        title: "Old chats cleaned",
+        title: "Old chats hidden",
         description:
-          purgedCount && purgedCount > 0
-            ? `${purgedCount} chats removed from the database.`
-            : "No old chats needed cleanup.",
+          deletedCount && deletedCount > 0
+            ? `${deletedCount} old chats hidden from the app.`
+            : "No old chats needed hiding.",
         timeout: 3500,
         data: { allowCrossThreadVisibility: true },
       });
@@ -217,8 +184,10 @@ function isRecentViewSwitcherCommitKey(event: KeyboardEvent): boolean {
 
 function ChatRouteGlobalShortcuts() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { settings: appSettings } = useAppSettings();
   const pathname = useLocation({ select: (location) => location.pathname });
-  const { toggleSidebar } = useSidebar();
+  const toggleSearchPalette = useAppChromeStore((state) => state.toggleSearchPalette);
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   const clearSelection = useThreadSelectionStore((state) => state.clearSelection);
   const selectedThreadIdsSize = useThreadSelectionStore((state) => state.selectedThreadIds.size);
@@ -341,10 +310,10 @@ function ChatRouteGlobalShortcuts() {
       }
 
       const command = resolveShortcutCommand(event, keybindings, { context: shortcutContext });
-      if (command === "sidebar.toggle") {
+      if (command === "sidebar.toggle" || command === "sidebar.search") {
         event.preventDefault();
         event.stopPropagation();
-        toggleSidebar();
+        toggleSearchPalette("search");
         return;
       }
 
@@ -370,7 +339,23 @@ function ChatRouteGlobalShortcuts() {
         if (!latestUsableProjectId) return;
         event.preventDefault();
         event.stopPropagation();
-        void handleNewThread(latestUsableProjectId);
+        const projectCwd =
+          projects.find((project) => project.id === latestUsableProjectId)?.cwd ?? null;
+        const branches =
+          queryClient.getQueryData<{ branches: ReadonlyArray<GitBranch> }>(
+            gitQueryKeys.branches(projectCwd),
+          )?.branches ?? null;
+        void handleNewThread(
+          latestUsableProjectId,
+          resolveNewThreadInProjectOptions({
+            defaultThreadEnvMode: appSettings.defaultThreadEnvMode,
+            preferredBaseBranch: resolveWorktreeBaseBranchForProject({
+              projectCwd,
+              sourceThreadBranch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
+              branches,
+            }),
+          }),
+        );
         return;
       }
 
@@ -471,14 +456,16 @@ function ChatRouteGlobalShortcuts() {
     handleNewThread,
     keybindings,
     latestUsableProjectId,
+    appSettings.defaultThreadEnvMode,
     openOrAdvanceRecentSwitcher,
     providerStatuses,
     projects,
+    queryClient,
     recentSwitcherState,
     selectedThreadIdsSize,
     terminalOpen,
     terminalWorkspaceOpen,
-    toggleSidebar,
+    toggleSearchPalette,
   ]);
 
   useEffect(() => {
@@ -489,7 +476,7 @@ function ChatRouteGlobalShortcuts() {
 
     const unsubscribe = onMenuAction((action) => {
       if (action === "toggle-sidebar") {
-        toggleSidebar();
+        toggleSearchPalette("search");
         return;
       }
       if (action !== "open-settings") return;
@@ -499,7 +486,7 @@ function ChatRouteGlobalShortcuts() {
     return () => {
       unsubscribe?.();
     };
-  }, [navigate, toggleSidebar]);
+  }, [navigate, toggleSearchPalette]);
 
   return (
     <>
@@ -525,68 +512,30 @@ function ChatRouteGlobalShortcuts() {
   );
 }
 
-/** Subtle top-corner sheen on the sidebar gap. The sidebar always sits on the left, so
- *  the radial highlight is anchored to the top-left corner. */
-const SIDEBAR_GAP_CLASS =
-  "overflow-hidden before:absolute before:inset-0 before:bg-[radial-gradient(90%_75%_at_0%_0%,rgba(255,255,255,0.06),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.008))] dark:before:bg-[radial-gradient(90%_75%_at_0%_0%,rgba(255,255,255,0.04),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(255,255,255,0.006))]";
-
-/** No inline-start/end border: the chat content card provides the edge (rounded + overlap).
- *  A sidebar border here draws a full-height vertical line through the titlebar seam. */
-const SIDEBAR_INNER_CLASS = "app-sidebar-surface";
-
 function ChatRouteLayout() {
   const isEditorView = useLocation({
     select: (location) => (location.search as { view?: unknown }).view === "editor",
   });
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const resolvedSidebarOpen = isEditorView ? false : sidebarOpen;
-
-  // The thread sidebar always lives on the left; the right dock is a separate surface.
-  const sidebarElement = (
-    <Sidebar
-      side="left"
-      collapsible="offcanvas"
-      // Match the right dock's soft drawer slide (shared token) instead of the
-      // shell's default `ease-linear`. Applied to the container + gap in lockstep.
-      className={cn("text-foreground", SIDEBAR_OFFCANVAS_MOTION_CLASS)}
-      gapClassName={cn(SIDEBAR_GAP_CLASS, SIDEBAR_OFFCANVAS_MOTION_CLASS)}
-      innerClassName={SIDEBAR_INNER_CLASS}
-      transparentSurface
-      resizable={THREAD_SIDEBAR_RESIZABLE}
-    >
-      <ThreadSidebar />
-    </Sidebar>
-  );
-
-  // Chat column shell. The content-seam rail is the resize hit-area for the seam —
-  // the visible divider + depth shadow live on the chat card's inner edge (see
-  // `.chat-content-card` in index.css). It sits OUTSIDE <Sidebar> so it stacks above
-  // the card, so SidebarInstanceProvider re-supplies the same resize config/side it
-  // would have gotten inside <Sidebar> (otherwise dragging to resize stops working).
-  // `data-sidebar-side` on the provider selects the seam geometry.
-  const mainContentShell = (
-    <div className="chat-content-card-backing relative flex h-svh min-h-0 min-w-0 flex-1">
-      {isEditorView ? null : (
-        <SidebarInstanceProvider side="left" resizable={THREAD_SIDEBAR_RESIZABLE}>
-          <SidebarRail placement="content-seam" />
-        </SidebarInstanceProvider>
-      )}
-      <Outlet />
-    </div>
-  );
 
   return (
-    <SidebarProvider
-      defaultOpen
-      open={resolvedSidebarOpen}
-      onOpenChange={setSidebarOpen}
-      className="bg-[var(--app-shell-background)]"
-      data-sidebar-side="left"
-    >
-      <ThreadRetentionMaintenanceToast />
-      <ChatRouteGlobalShortcuts />
-      {sidebarElement}
-      {mainContentShell}
+    <SidebarProvider defaultOpen={false} open={false} className="bg-[var(--app-shell-background)]">
+      <AppChromeProvider>
+        <ChatChromeActionsProvider>
+          <ThreadRetentionMaintenanceToast />
+          <ChatRouteGlobalShortcuts />
+          <ThreadSidebar chromeOnly />
+          <AppChromeOverlays />
+          <div className="chat-content-card-backing relative flex h-svh min-h-0 min-w-0 flex-1 flex-col">
+            {isEditorView ? null : <AppTopBar />}
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-background-surface)]">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-background-surface)]">
+                <Outlet />
+              </div>
+              {isEditorView ? null : <AppTopBarThreadActionsIsland />}
+            </div>
+          </div>
+        </ChatChromeActionsProvider>
+      </AppChromeProvider>
     </SidebarProvider>
   );
 }

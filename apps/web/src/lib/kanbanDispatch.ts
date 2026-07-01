@@ -37,6 +37,7 @@ import {
   formatOutgoingComposerPrompt,
   resolvePromptEffortFromModelSelection,
 } from "./composerSend";
+import { appendFileCommentsToPrompt, formatFileCommentTitleSeed } from "./fileComments";
 import {
   filterPromptProviderMentionReferences,
   filterPromptSkillReferences,
@@ -173,26 +174,37 @@ async function dispatchKanbanDraftThreadOnce(
   const skills = draftComposerState?.skills ?? [];
   const mentions = draftComposerState?.mentions ?? [];
   const composerImages = draftComposerState?.images ?? [];
+  const composerFiles = draftComposerState?.files ?? [];
   const composerAssistantSelections = draftComposerState?.assistantSelections ?? [];
+  const composerFileComments = draftComposerState?.fileComments ?? [];
   const sendableTerminalContexts = filterTerminalContextsWithText(
     draftComposerState?.terminalContexts ?? [],
   );
   const titleSeed =
     prompt ||
     (composerImages[0] ? `Image: ${composerImages[0].name}` : "") ||
+    (composerFiles[0] ? `File: ${composerFiles[0].name}` : "") ||
     (composerAssistantSelections.length > 0 ? "Referenced assistant selection" : "") ||
     (sendableTerminalContexts.length > 0 ? "Attached terminal context" : "") ||
+    (composerFileComments.length > 0
+      ? formatFileCommentTitleSeed(composerFileComments.length)
+      : "") ||
     "New task";
   const fallbackTitle = buildPromptThreadTitleFallback(titleSeed);
-  const messageText = appendTerminalContextsToPrompt(
-    appendAssistantSelectionsToPrompt(liveSnapshot?.prompt ?? "", composerAssistantSelections),
-    sendableTerminalContexts,
+  // File comments serialize outermost so trailing-block extractors unwrap them
+  // first — matching the chat composer's send path byte-for-byte.
+  const messageText = appendFileCommentsToPrompt(
+    appendTerminalContextsToPrompt(
+      appendAssistantSelectionsToPrompt(liveSnapshot?.prompt ?? "", composerAssistantSelections),
+      sendableTerminalContexts,
+    ),
+    composerFileComments,
   );
   const outgoingMessageText = formatOutgoingComposerPrompt({
     provider: modelSelection.provider,
     model: modelSelection.model,
     effort: resolvePromptEffortFromModelSelection(modelSelection),
-    text: messageText || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+    text: messageText || (composerImages.length > 0 ? IMAGE_ONLY_BOOTSTRAP_PROMPT : ""),
   });
   const mentionedSkills = filterPromptSkillReferences(
     outgoingMessageText,
@@ -202,6 +214,7 @@ async function dispatchKanbanDraftThreadOnce(
   const mentionedMentions = filterPromptProviderMentionReferences(outgoingMessageText, mentions);
   const turnAttachmentsPromise = buildUploadComposerAttachments({
     images: composerImages,
+    files: composerFiles,
     assistantSelections: composerAssistantSelections,
   });
   // The same instant feeds both the command timestamps and the optimistic entry:

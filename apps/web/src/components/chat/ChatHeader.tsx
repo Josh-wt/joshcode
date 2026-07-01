@@ -65,6 +65,10 @@ import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
 import { ProviderIcon } from "../ProviderIcon";
 import { ProviderUsageMenuControl } from "../ProviderUsageMenuControl";
 import { EnvironmentToggle, type EnvironmentToggleState } from "./environment/EnvironmentToggle";
+import {
+  ChatHeaderActionCluster,
+  type ChatHeaderActionClusterProps,
+} from "./ChatHeaderActionCluster";
 
 /**
  * Width (px) below which collapsible header controls drop their text labels and
@@ -86,8 +90,10 @@ interface ChatHeaderProps {
   className?: string;
   hideSidebarControls?: boolean;
   hideHandoffControls?: boolean;
+  /** When the unified AppTopBar already shows the active thread tab, hide the duplicate title row. */
+  hideThreadIdentity?: boolean;
   isGitRepo: boolean;
-  openInCwd: string | null;
+  openInTarget: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -144,6 +150,8 @@ interface ChatHeaderProps {
   onRenameThread: () => void;
   onCloseThreadPane?: () => void;
 }
+
+export type { ChatHeaderActionClusterProps };
 
 const EDITOR_CHAT_HISTORY_LIMIT = 30;
 
@@ -487,8 +495,9 @@ export const ChatHeader = memo(function ChatHeader({
   className,
   hideSidebarControls = false,
   hideHandoffControls = false,
+  hideThreadIdentity = false,
   isGitRepo,
-  openInCwd,
+  openInTarget,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
@@ -525,28 +534,47 @@ export const ChatHeader = memo(function ChatHeader({
   const { isMobile, state } = useSidebar();
   const headerRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
-  const [openAddActionNonce, setOpenAddActionNonce] = useState(0);
-  const {
-    additions: diffAdditions,
-    deletions: diffDeletions,
-    hasChanges: showDiffTotals,
-  } = diffTotals;
   const isDisposableThread = useIsDisposableThread(activeThreadId);
-
-  // Own the open-favorite editor shortcut here so it survives regardless of which editor UI
-  // is mounted (the legacy Open-in button, the Environment panel's Editor section, or
-  // neither while the panel is closed). The header is always present for a project thread.
-  useOpenFavoriteEditorShortcut({
-    keybindings,
-    availableEditors,
-    openInCwd,
-    enabled: !isDisposableThread && Boolean(activeProjectName),
-  });
 
   const isSplitPane = surfaceMode === "split";
   const inlineChatLayoutAction = chatLayoutAction;
   const threadIconKind = resolveChatHeaderThreadIconKind(activeThreadEntryPoint, activeThreadTitle);
   const showSidechatTitleChip = isSidechat && compact;
+
+  const actionClusterProps: ChatHeaderActionClusterProps = {
+    activeThreadId,
+    activeProvider,
+    activeProjectName,
+    hideHandoffControls,
+    isGitRepo,
+    openInTarget,
+    activeProjectScripts,
+    preferredScriptId,
+    keybindings,
+    availableEditors,
+    diffToggleShortcutLabel,
+    handoffBadgeLabel,
+    handoffActionLabel,
+    handoffDisabled,
+    handoffActionTargetProviders,
+    handoffBadgeSourceProvider,
+    handoffBadgeTargetProvider,
+    gitCwd,
+    diffTotals,
+    showGitActions,
+    showDiffToggle,
+    diffOpen,
+    diffDisabledReason,
+    environment,
+    chatLayoutAction: inlineChatLayoutAction,
+    changeThreadAction,
+    onRunProjectScript,
+    onAddProjectScript,
+    onUpdateProjectScript,
+    onDeleteProjectScript,
+    onToggleDiff,
+    onCreateHandoff,
+  };
 
   useEffect(() => {
     const el = headerRef.current;
@@ -568,52 +596,6 @@ export const ChatHeader = memo(function ChatHeader({
       />
     );
   };
-
-  // The right-side diff toggle (the "open the diff on the right" affordance). It stays in
-  // the header in both layouts — beside the Environment button when that is enabled, and
-  // inside the legacy cluster otherwise — so the familiar right-sidebar control is always a
-  // single click away. Declared once here to avoid duplicating the markup across branches.
-  const diffToggleControl = showDiffToggle ? (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Toggle
-            className={cn(
-              CHAT_HEADER_TOGGLE_CLASS_NAME,
-              showDiffTotals ? null : "!size-7 [&_svg,&_[data-slot=central-icon]]:mx-0",
-            )}
-            pressed={diffOpen}
-            onPressedChange={onToggleDiff}
-            aria-label="Toggle diff panel"
-            variant="default"
-            size="xs"
-            disabled={!isGitRepo || (diffDisabledReason !== null && !diffOpen)}
-          >
-            {showDiffTotals ? (
-              <span className="inline-flex items-center gap-1">
-                <span className="font-system-ui text-[length:var(--app-font-size-ui-sm,11px)] sm:text-[length:var(--app-font-size-ui-xs,10px)] font-normal tracking-normal tabular-nums text-success">
-                  +{diffAdditions}
-                </span>
-                <span className="font-system-ui text-[length:var(--app-font-size-ui-sm,11px)] sm:text-[length:var(--app-font-size-ui-xs,10px)] font-normal tracking-normal tabular-nums text-destructive">
-                  -{diffDeletions}
-                </span>
-              </span>
-            ) : null}
-            <SurfaceChipIcon icon={PanelRightCloseIcon} className="size-4" />
-          </Toggle>
-        }
-      />
-      <TooltipPopup side="bottom">
-        {!isGitRepo
-          ? "Diff panel is unavailable because this project is not a git repository."
-          : diffDisabledReason && !diffOpen
-            ? diffDisabledReason
-            : diffToggleShortcutLabel
-              ? `Toggle diff panel (${diffToggleShortcutLabel})`
-              : "Toggle diff panel"}
-      </TooltipPopup>
-    </Tooltip>
-  ) : null;
 
   return (
     <div ref={headerRef} className={cn("flex min-w-0 flex-1 items-center gap-2", className)}>
@@ -653,6 +635,7 @@ export const ChatHeader = memo(function ChatHeader({
                 ))}
               </div>
             ) : null}
+            {hideThreadIdentity && !showSidechatTitleChip ? null : (
             <div className={cn("flex min-w-0 items-center gap-2", editorChatControls && "h-full")}>
               <div
                 className={cn(
@@ -661,7 +644,7 @@ export const ChatHeader = memo(function ChatHeader({
                     "rounded-lg bg-secondary py-1 pl-2 pr-1 text-secondary-foreground",
                 )}
               >
-                {threadIconKind === "none" ? null : (
+                {hideThreadIdentity || threadIconKind === "none" ? null : (
                   <span
                     className="inline-flex size-3.5 shrink-0 items-center justify-center"
                     title={
@@ -677,6 +660,7 @@ export const ChatHeader = memo(function ChatHeader({
                     )}
                   </span>
                 )}
+                {hideThreadIdentity ? null : (
                 <h2
                   className="max-w-[clamp(12rem,42vw,36rem)] truncate text-sm font-medium text-foreground"
                   title={activeThreadTitle}
@@ -684,6 +668,7 @@ export const ChatHeader = memo(function ChatHeader({
                 >
                   {activeThreadTitle}
                 </h2>
+                )}
                 {showSidechatTitleChip && onCloseThreadPane ? (
                   <IconButton
                     variant="chrome"
@@ -740,139 +725,12 @@ export const ChatHeader = memo(function ChatHeader({
                 </Tooltip>
               ) : null}
             </div>
+            )}
           </div>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag]">
-        {!isDisposableThread && !hideHandoffControls && !environment ? (
-          <ProviderUsageMenuControl provider={activeProvider} />
-        ) : null}
-        {!isDisposableThread && !hideHandoffControls ? (
-          <Menu modal={false}>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <MenuTrigger
-                    render={
-                      <ChatHeaderButton
-                        type="button"
-                        tone="outline"
-                        className={compact ? "gap-1" : "gap-1.5"}
-                        aria-label={handoffActionLabel}
-                        disabled={handoffDisabled || handoffActionTargetProviders.length === 0}
-                      />
-                    }
-                  >
-                    <HandoffIcon className="size-[1em] shrink-0 opacity-80" />
-                    {!compact ? <span className="truncate font-normal">Hand off</span> : null}
-                  </MenuTrigger>
-                }
-              />
-              <TooltipPopup side="bottom">{handoffActionLabel}</TooltipPopup>
-            </Tooltip>
-            <ComposerPickerMenuPopup align="end" side="bottom" className="w-48 min-w-48">
-              {handoffActionTargetProviders.map((provider) => (
-                <MenuItem key={provider} onClick={() => onCreateHandoff(provider)}>
-                  {renderProviderIcon(provider, "size-3.5 shrink-0")}
-                  <span>Handoff to {PROVIDER_DISPLAY_NAMES[provider]}</span>
-                </MenuItem>
-              ))}
-            </ComposerPickerMenuPopup>
-          </Menu>
-        ) : null}
-        {/* Keep one shared project-actions controller mounted so both inline and
-            compact header menus open the same dialog/state machine. */}
-        {!isDisposableThread && activeProjectScripts ? (
-          <ProjectScriptsControl
-            scripts={activeProjectScripts}
-            keybindings={keybindings}
-            preferredScriptId={preferredScriptId}
-            showInlineControls={!compact}
-            openAddActionNonce={openAddActionNonce}
-            onRunScript={onRunProjectScript}
-            onAddScript={onAddProjectScript}
-            onUpdateScript={onUpdateProjectScript}
-            onDeleteScript={onDeleteProjectScript}
-          />
-        ) : null}
-
-        {!isDisposableThread && inlineChatLayoutAction ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ChatHeaderIconButton
-                  type="button"
-                  label={inlineChatLayoutAction.label}
-                  onClick={inlineChatLayoutAction.onClick}
-                >
-                  {inlineChatLayoutAction.kind === "split" ? (
-                    <SquareSplitVertical className="size-3.5" />
-                  ) : (
-                    <HiMiniArrowsPointingOut className="size-3.5" />
-                  )}
-                </ChatHeaderIconButton>
-              }
-            />
-            <TooltipPopup side="bottom">
-              {inlineChatLayoutAction.shortcutLabel
-                ? `${inlineChatLayoutAction.label} (${inlineChatLayoutAction.shortcutLabel})`
-                : inlineChatLayoutAction.label}
-            </TooltipPopup>
-          </Tooltip>
-        ) : null}
-
-        {/* Change thread stays as a standalone control (split/sidechat only). */}
-        {!isDisposableThread && changeThreadAction ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ChatHeaderIconButton
-                  type="button"
-                  label={changeThreadAction.label}
-                  onClick={changeThreadAction.onClick}
-                >
-                  <TbExchange className="size-3.5" />
-                </ChatHeaderIconButton>
-              }
-            />
-            <TooltipPopup side="bottom">{changeThreadAction.label}</TooltipPopup>
-          </Tooltip>
-        ) : null}
-
-        {/* Environment: one button consolidating Open-in-editor and git actions into the
-            Environment panel. The right-side diff toggle stays beside it so the familiar
-            "open the diff on the right" control is preserved. Falls back to the legacy split
-            controls for disposable threads (which never surface the panel). */}
-        {environment && !isDisposableThread ? (
-          <>
-            <EnvironmentToggle environment={environment} />
-            {diffToggleControl}
-          </>
-        ) : (
-          <>
-            {/* Open in editor: dedicated split-button with an editor switcher; the project
-                "Add action" entry lives at the bottom of that same menu. */}
-            {!isDisposableThread && activeProjectName ? (
-              <OpenInPicker
-                keybindings={keybindings}
-                availableEditors={availableEditors}
-                openInCwd={openInCwd}
-                {...(activeProjectScripts
-                  ? { onAddAction: () => setOpenAddActionNonce((current) => current + 1) }
-                  : {})}
-              />
-            ) : null}
-
-            {!isDisposableThread && activeProjectName && showGitActions ? (
-              <GitActionsControl
-                gitCwd={gitCwd}
-                activeThreadId={activeThreadId}
-                hideQuickActionLabel={compact}
-              />
-            ) : null}
-            {diffToggleControl}
-          </>
-        )}
+        <ChatHeaderActionCluster {...actionClusterProps} />
       </div>
     </div>
   );

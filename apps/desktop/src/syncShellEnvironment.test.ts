@@ -27,6 +27,8 @@ describe("syncShellEnvironment", () => {
       "HOMEBREW_REPOSITORY",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
     ]);
     expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin:/Users/test/.local/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
@@ -95,6 +97,8 @@ describe("syncShellEnvironment", () => {
       "HOMEBREW_REPOSITORY",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
     ]);
     expect(env.PATH).toBe("/usr/local/bin:/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/ssh.sock");
@@ -122,6 +126,8 @@ describe("syncShellEnvironment", () => {
       "HOMEBREW_REPOSITORY",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
     ]);
     expect(env.PATH).toBe("/usr/local/bin:/usr/bin");
   });
@@ -156,6 +162,8 @@ describe("syncShellEnvironment", () => {
       "HOMEBREW_REPOSITORY",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
     ]);
     expect(readEnvironment).toHaveBeenNthCalledWith(2, "/bin/zsh", [
       "PATH",
@@ -165,6 +173,8 @@ describe("syncShellEnvironment", () => {
       "HOMEBREW_REPOSITORY",
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "ANTHROPIC_API_KEY",
     ]);
     expect(readLaunchctlPath).toHaveBeenCalledTimes(1);
     expect(logWarning).toHaveBeenCalledWith(

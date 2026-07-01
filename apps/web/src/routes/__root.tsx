@@ -153,9 +153,9 @@ function RootRouteView() {
   useSyncDesktopTopBarTrafficLightGutterZoom();
   useTheme();
 
-  // Single mount point for the Windows caption buttons. The cluster is pinned to the
-  // window's top-right corner (frameless Windows shell) and renders nothing on macOS,
-  // Linux, or the web build, so it is safe to mount unconditionally here — including on
+  // Single mount point for the Windows/Linux caption buttons. The cluster is pinned to the
+  // window's top-right corner (frameless Windows/Linux shell) and renders nothing on macOS
+  // or the web build, so it is safe to mount unconditionally here — including on
   // the pre-backend "connecting" screen, so the window stays closable before the
   // renderer connects. Top bars reserve space for it via
   // useDesktopTopBarWindowControlsGutterClassName().
@@ -1348,10 +1348,10 @@ function EventRouter() {
           queryKey: ["provider-discovery", "models", "cursor"],
         });
         void queryClient.invalidateQueries({
-          queryKey: providerDiscoveryQueryKeys.agents("kilo"),
+          queryKey: providerDiscoveryQueryKeys.agentsForProvider("kilo"),
         });
         void queryClient.invalidateQueries({
-          queryKey: providerDiscoveryQueryKeys.agents("opencode"),
+          queryKey: providerDiscoveryQueryKeys.agentsForProvider("opencode"),
         });
       }
     });

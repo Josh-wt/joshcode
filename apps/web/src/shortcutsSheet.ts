@@ -63,7 +63,7 @@ const AVAILABLE_NOW_DEFINITIONS: readonly ShortcutDefinition[] = [
   {
     command: "chat.new",
     label: "New thread",
-    description: "Start a fresh thread in the current project.",
+    description: "Start a fresh thread in the current project, or the most recent one.",
   },
   {
     command: "chat.newLatestProject",
@@ -124,6 +124,11 @@ const AVAILABLE_NOW_DEFINITIONS: readonly ShortcutDefinition[] = [
     command: "traitsPicker.toggle",
     label: "Reasoning picker",
     description: "Open the composer reasoning and trait controls.",
+  },
+  {
+    command: "composer.focus.toggle",
+    label: "Focus composer",
+    description: "Focus or blur the chat prompt composer.",
   },
   {
     command: "terminal.toggle",

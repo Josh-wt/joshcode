@@ -804,6 +804,19 @@ function extractResumeSessionId(resumeCursor: unknown): string | undefined {
   return undefined;
 }
 
+function extractResumeCwd(resumeCursor: unknown): string | undefined {
+  if (
+    resumeCursor &&
+    typeof resumeCursor === "object" &&
+    "cwd" in resumeCursor &&
+    typeof resumeCursor.cwd === "string" &&
+    resumeCursor.cwd.trim().length > 0
+  ) {
+    return resumeCursor.cwd.trim();
+  }
+  return undefined;
+}
+
 type OpenCodeModelInventory = {
   readonly providerList: {
     readonly connected: ReadonlyArray<string>;
@@ -1613,6 +1626,16 @@ function mergeOpenCodeCliModelDescriptors(input: {
   }
 
   return [...mergedBySlug.values()].toSorted(compareOpenCodeModelDescriptors);
+}
+
+function emptyOpenCodeModelInventory(): OpenCodeModelInventory {
+  return {
+    providerList: {
+      connected: [],
+      all: [],
+    },
+    consoleState: null,
+  };
 }
 
 function flattenOpenCodeAgents(agents: ReadonlyArray<Agent>): ProviderListAgentsResult["agents"] {
@@ -3338,6 +3361,50 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         },
       );
 
+      const collectKnownMessageIds = (context: OpenCodeSessionContext): Set<string> =>
+        new Set(context.messageRoleById.keys());
+
+      const captureTurnSnapshotWatchdogBaseline = Effect.fn("captureTurnSnapshotWatchdogBaseline")(
+        function* (context: OpenCodeSessionContext) {
+          const knownMessageIds = collectKnownMessageIds(context);
+          const snapshotsExit = yield* Effect.exit(rememberCurrentMessageSnapshots(context));
+          if (Exit.isSuccess(snapshotsExit)) {
+            // Preserve already observed ids even if OpenCode returns a partial message list.
+            for (const messageId of snapshotsExit.value) {
+              knownMessageIds.add(messageId);
+            }
+            return {
+              canStartWatchdog: true,
+              messageIds: knownMessageIds,
+            } as const;
+          }
+
+          if (knownMessageIds.size > 0) {
+            return {
+              canStartWatchdog: true,
+              messageIds: knownMessageIds,
+            } as const;
+          }
+
+          // Without a pre-turn or remembered baseline, old completed assistant messages
+          // are indistinguishable from this turn's final response.
+          yield* writeNativeEventBestEffort(context.session.threadId, {
+            observedAt: nowIso(),
+            event: {
+              provider,
+              threadId: context.session.threadId,
+              providerThreadId: context.openCodeSessionId,
+              type: "turn.snapshot-watchdog.disabled",
+              detail: openCodeRuntimeErrorDetail(Cause.squash(snapshotsExit.cause)),
+            },
+          });
+          return {
+            canStartWatchdog: false,
+            messageIds: knownMessageIds,
+          } as const;
+        },
+      );
+
       const replayOpenCodeMessageSnapshots = Effect.fn("replayOpenCodeMessageSnapshots")(function* (
         context: OpenCodeSessionContext,
         snapshots: ReadonlyArray<OpenCodeMessageSnapshot>,
@@ -3375,27 +3442,28 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         }
       });
 
-      const startKiloTurnSnapshotWatchdog = Effect.fn("startKiloTurnSnapshotWatchdog")(function* (
+      // Completion backstop for OpenCode-family providers: the SSE stream can drop or
+      // delay the terminal `session.idle` event (child-session gating, reconnects,
+      // provider-specific final-message shapes), which leaves a turn stuck in
+      // "working" even though the provider already finished. This independent fiber
+      // polls session status and, once the session looks idle with a fresh final
+      // assistant message, synthesizes the idle event so the turn completes.
+      //
+      // `pollMessagesWhileBusy` trades load for liveness: Kilo pulls the full message
+      // list every tick to also act as a live transcript catch-up; plain OpenCode
+      // keeps it cheap by only pulling messages once the session is no longer busy
+      // (fetching a large transcript every 500ms would be wasteful on big turns).
+      const startTurnSnapshotWatchdog = Effect.fn("startTurnSnapshotWatchdog")(function* (
         context: OpenCodeSessionContext,
         turnId: TurnId,
         baselineMessageIds: ReadonlySet<string>,
+        options: { readonly pollMessagesWhileBusy: boolean },
       ) {
         yield* Effect.gen(function* () {
           let idlePollsWithFinalMessage = 0;
 
           while (!(yield* Ref.get(context.stopped)) && context.activeTurnId === turnId) {
             yield* Effect.sleep(500);
-
-            const snapshotsExit = yield* Effect.exit(loadCurrentMessageSnapshots(context));
-            let hasFinalAssistantMessage = false;
-            if (Exit.isSuccess(snapshotsExit)) {
-              yield* replayOpenCodeMessageSnapshots(context, snapshotsExit.value, turnId);
-              hasFinalAssistantMessage = snapshotsExit.value.some(
-                (snapshot) =>
-                  !baselineMessageIds.has(snapshot.info.id) &&
-                  isFinalAssistantMessageSnapshot(snapshot),
-              );
-            }
 
             const statusExit = yield* Effect.exit(
               runOpenCodeSdk("session.status", () =>
@@ -3404,13 +3472,26 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 }),
               ),
             );
-            if (!Exit.isSuccess(statusExit)) {
-              idlePollsWithFinalMessage = 0;
-              continue;
+            const statusKnown = Exit.isSuccess(statusExit);
+            const status = statusKnown
+              ? statusExit.value.data?.[context.openCodeSessionId]
+              : undefined;
+            const sessionBusy = status?.type === "busy" || status?.type === "retry";
+
+            let hasFinalAssistantMessage = false;
+            if (options.pollMessagesWhileBusy || (statusKnown && !sessionBusy)) {
+              const snapshotsExit = yield* Effect.exit(loadCurrentMessageSnapshots(context));
+              if (Exit.isSuccess(snapshotsExit)) {
+                yield* replayOpenCodeMessageSnapshots(context, snapshotsExit.value, turnId);
+                hasFinalAssistantMessage = snapshotsExit.value.some(
+                  (snapshot) =>
+                    !baselineMessageIds.has(snapshot.info.id) &&
+                    isFinalAssistantMessageSnapshot(snapshot),
+                );
+              }
             }
 
-            const status = statusExit.value.data?.[context.openCodeSessionId];
-            if (status?.type === "busy" || status?.type === "retry") {
+            if (!statusKnown || sessionBusy) {
               idlePollsWithFinalMessage = 0;
               continue;
             }
@@ -3522,7 +3603,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             adapterConfig.providerOptionsKey === "opencode"
               ? input.providerOptions?.opencode?.experimentalWebSockets
               : undefined;
-          const directory = input.cwd ?? serverConfig.cwd;
+          const resumeDirectory = extractResumeCwd(input.resumeCursor);
+          const directory = input.cwd ?? resumeDirectory ?? serverConfig.cwd;
           const initialParsedModel =
             input.modelSelection?.provider === adapterConfig.provider
               ? parseOpenCodeModelSlug(input.modelSelection.model)
@@ -3550,6 +3632,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 const server = yield* openCodeRuntime.connectToOpenCodeServer({
                   binaryPath,
                   cliSpec: adapterConfig.cliSpec,
+                  cwd: directory,
                   ...(serverUrl ? { serverUrl } : {}),
                   ...(provider === "opencode" && experimentalWebSockets
                     ? { experimentalWebSockets: true }
@@ -3636,7 +3719,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             activeWorkspaceContextId: input.activeWorkspaceContextId ?? null,
             ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
             threadId: input.threadId,
-            resumeCursor: { openCodeSessionId: started.openCodeSessionId },
+            resumeCursor: { openCodeSessionId: started.openCodeSessionId, cwd: directory },
             createdAt,
             updatedAt: createdAt,
           };
@@ -3778,9 +3861,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         });
 
         if (provider === "kilo") {
-          const baselineMessageIds = yield* rememberCurrentMessageSnapshots(context).pipe(
-            Effect.catchCause(() => Effect.succeed(new Set<string>())),
-          );
+          const snapshotWatchdogBaseline = yield* captureTurnSnapshotWatchdogBaseline(context);
           const recoveryBaselineMessageIds = yield* captureOpenCodeRecoveryBaseline(context);
           const providerActivitySerial = context.activeTurnProviderActivitySerial;
           yield* schedulePromptAcceptedWatchdog(context, {
@@ -3800,8 +3881,15 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
             },
           });
-          yield* startKiloTurnSnapshotWatchdog(context, turnId, baselineMessageIds);
+          if (snapshotWatchdogBaseline.canStartWatchdog) {
+            yield* startTurnSnapshotWatchdog(context, turnId, snapshotWatchdogBaseline.messageIds, {
+              pollMessagesWhileBusy: true,
+            });
+          }
         } else {
+          // Capture the pre-turn message ids before submitting so the watchdog can
+          // distinguish this turn's final assistant message from prior ones.
+          const snapshotWatchdogBaseline = yield* captureTurnSnapshotWatchdogBaseline(context);
           yield* submitOpenCodePromptAsync(context, {
             turnId,
             promptInput: {
@@ -3812,12 +3900,20 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
             },
           });
+          // OpenCode lacks Kilo's prompt-accepted hard-fail watchdog, but it still
+          // needs a completion backstop for dropped/delayed idle events. Keep the
+          // poll cheap (status-first) so large turns are not penalized.
+          if (snapshotWatchdogBaseline.canStartWatchdog) {
+            yield* startTurnSnapshotWatchdog(context, turnId, snapshotWatchdogBaseline.messageIds, {
+              pollMessagesWhileBusy: false,
+            });
+          }
         }
 
         return {
           threadId: input.threadId,
           turnId,
-          resumeCursor: { openCodeSessionId: context.openCodeSessionId },
+          resumeCursor: { openCodeSessionId: context.openCodeSessionId, cwd: context.directory },
         };
       });
 
@@ -3945,6 +4041,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               .connectToOpenCodeServer({
                 binaryPath: adapterConfig.defaultBinaryPath,
                 cliSpec: adapterConfig.cliSpec,
+                cwd: directory,
               })
               .pipe(Effect.mapError(toAdapterRequestError));
             const client = openCodeRuntime.createOpenCodeSdkClient({
@@ -4046,7 +4143,19 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           const binaryPath = providerOptions?.binaryPath?.trim() || adapterConfig.defaultBinaryPath;
           const serverUrl = providerOptions?.serverUrl?.trim();
           const serverPassword = providerOptions?.serverPassword?.trim();
-          const directory = input.cwd ?? sourceContext?.directory ?? serverConfig.cwd;
+          const persistedSourceDirectory =
+            sourceContext?.directory ??
+            input.sourceCwd ??
+            extractResumeCwd(input.sourceResumeCursor);
+          const targetDirectory = input.cwd ?? persistedSourceDirectory ?? serverConfig.cwd;
+          const sourceDirectory = persistedSourceDirectory ?? targetDirectory;
+          if (sourceDirectory !== targetDirectory) {
+            return yield* new ProviderAdapterValidationError({
+              provider,
+              operation: "forkThread",
+              issue: `${adapterConfig.displayName} native fork cannot cross cwd boundaries.`,
+            });
+          }
 
           let client: OpencodeClient;
           if (sourceContext) {
@@ -4058,12 +4167,13 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   .connectToOpenCodeServer({
                     binaryPath,
                     cliSpec: adapterConfig.cliSpec,
+                    cwd: sourceDirectory,
                     ...(serverUrl ? { serverUrl } : {}),
                   })
                   .pipe(Effect.mapError(toAdapterRequestError));
                 return openCodeRuntime.createOpenCodeSdkClient({
                   baseUrl: server.url,
-                  directory,
+                  directory: sourceDirectory,
                   cliSpec: adapterConfig.cliSpec,
                   ...(server.external && serverPassword ? { serverPassword } : {}),
                 });
@@ -4089,10 +4199,10 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           const session = yield* startSession({
             threadId: input.threadId,
             provider,
-            cwd: directory,
+            cwd: targetDirectory,
             ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
             ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
-            resumeCursor: { openCodeSessionId: forkedSessionId },
+            resumeCursor: { openCodeSessionId: forkedSessionId, cwd: targetDirectory },
             runtimeMode: input.runtimeMode,
           });
 
@@ -4144,6 +4254,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 .connectToOpenCodeServer({
                   binaryPath: input.binaryPath?.trim() || adapterConfig.defaultBinaryPath,
                   cliSpec: adapterConfig.cliSpec,
+                  cwd: input.cwd?.trim() || serverConfig.cwd,
                   ...(serverUrl ? { serverUrl } : {}),
                   ...(provider === "opencode" && input.experimentalWebSockets
                     ? { experimentalWebSockets: true }
@@ -4204,8 +4315,35 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
       const listModels: NonNullable<OpenCodeAdapterShape["listModels"]> = (input) => {
         const binaryPath = input.binaryPath?.trim() || adapterConfig.defaultBinaryPath;
         const freeOnlyProviderID = adapterConfig.provider === "kilo" ? "kilo" : undefined;
-        return withDiscoveryInventory({ binaryPath }, ({ inventory, credentialProviderIDs }) =>
-          Effect.gen(function* () {
+        return Effect.gen(function* () {
+          const cliModelsEffect = openCodeRuntime
+            .listOpenCodeCliModels({
+              binaryPath,
+              cliSpec: adapterConfig.cliSpec,
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logDebug(`${adapterConfig.displayName} CLI model discovery failed`, {
+                  binaryPath,
+                  detail: openCodeRuntimeErrorDetail(error),
+                }).pipe(Effect.as([] as ReadonlyArray<OpenCodeCliModelDescriptor>)),
+              ),
+            );
+          const inventoryEffect = withDiscoveryInventory(
+            { binaryPath, ...(input.cwd ? { cwd: input.cwd } : {}) },
+            ({ inventory, credentialProviderIDs }) =>
+              Effect.succeed({
+                inventory,
+                credentialProviderIDs,
+              }),
+          ).pipe(Effect.exit);
+          const [cliModels, inventoryExit] = yield* Effect.all([cliModelsEffect, inventoryEffect], {
+            concurrency: "unbounded",
+          });
+
+          if (Exit.isSuccess(inventoryExit)) {
+            const { inventory, credentialProviderIDs } = inventoryExit.value;
             const preferredProviderIDs = new Set(
               resolvePreferredOpenCodeModelProviders({
                 inventory,
@@ -4217,9 +4355,6 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               credentialProviderIDs,
               ...(freeOnlyProviderID ? { freeOnlyProviderID } : {}),
             });
-            const cliModels = yield* openCodeRuntime
-              .listOpenCodeCliModels({ binaryPath, cliSpec: adapterConfig.cliSpec })
-              .pipe(Effect.catch(() => Effect.succeed([])));
             const preferredCliModels = cliModels.filter((model) =>
               preferredProviderIDs.has(model.providerID),
             );
@@ -4245,30 +4380,55 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   : adapterConfig.fallbackModelSource,
               cached: false,
             };
-          }).pipe(
-            Effect.catch(() =>
-              Effect.succeed({
-                models: flattenOpenCodeModels({
-                  inventory,
-                  credentialProviderIDs,
-                  ...(freeOnlyProviderID ? { freeOnlyProviderID } : {}),
-                }),
-                source: adapterConfig.fallbackModelSource,
-                cached: false,
-              }),
-            ),
-          ),
-        );
+          }
+
+          // Keep OpenCode's authoritative CLI list usable even if the local server
+          // cannot start; otherwise the web picker falls back to one static model.
+          if (cliModels.length > 0) {
+            const models = mergeOpenCodeCliModelDescriptors({
+              inventory: emptyOpenCodeModelInventory(),
+              models: [],
+              cliModels,
+              ...(freeOnlyProviderID ? { freeOnlyProviderID } : {}),
+            });
+            yield* Effect.logDebug(
+              `${adapterConfig.displayName} model discovery resolved from CLI only`,
+              {
+                binaryPath,
+                cliModelCount: cliModels.length,
+                modelCount: models.length,
+                sampleModels: models.slice(0, 12).map((model) => model.slug),
+              },
+            );
+            return {
+              models,
+              source: adapterConfig.cliModelSource,
+              cached: false,
+            };
+          }
+
+          const inventoryFailure = Cause.squash(inventoryExit.cause);
+          return yield* new ProviderAdapterRequestError({
+            provider,
+            method: "listModels",
+            detail: openCodeRuntimeErrorDetail(inventoryFailure),
+            cause: inventoryFailure,
+          });
+        });
       };
 
-      const listAgents: NonNullable<OpenCodeAdapterShape["listAgents"]> = () =>
-        withDiscoveryInventory({}, ({ inventory }) =>
-          Effect.succeed({
-            agents: flattenOpenCodeAgents(inventory.agents),
-            source: adapterConfig.fallbackModelSource,
-            cached: false,
-          }),
+      const listAgents: NonNullable<OpenCodeAdapterShape["listAgents"]> = (input) => {
+        const binaryPath = input.binaryPath?.trim() || adapterConfig.defaultBinaryPath;
+        return withDiscoveryInventory(
+          { binaryPath, ...(input.cwd ? { cwd: input.cwd } : {}) },
+          ({ inventory }) =>
+            Effect.succeed({
+              agents: flattenOpenCodeAgents(inventory.agents),
+              source: adapterConfig.fallbackModelSource,
+              cached: false,
+            }),
         );
+      };
 
       const listCommands: NonNullable<OpenCodeAdapterShape["listCommands"]> = (input) => {
         const discoveryInput = {

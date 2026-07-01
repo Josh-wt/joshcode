@@ -207,11 +207,11 @@
        --app-surface-divider used by the internal hairlines/splits): the card's outer
        edge against the sidebar should read as solid as before. Do not re-unify these. */
     --seam-line: var(--color-border);
-    --seam-shadow-color: rgba(0, 0, 0, 0.068);
+    --seam-shadow-color: rgba(0, 0, 0, 0.1);
     --seam-shadow-x: 0px;
-    /* Tight, low-spread depth: small blur + heavy negative spread so the shadow hugs the
-       seam edge instead of fanning out across the sidebar. */
-    box-shadow: var(--seam-shadow-x) 0 9px -13px var(--seam-shadow-color);
+    /* Soft, low-spread depth: a modest blur + negative spread keeps the shadow near the
+       seam edge rather than fanning across the sidebar, just enough to lift the card. */
+    box-shadow: var(--seam-shadow-x) 0 12px -10px var(--seam-shadow-color);
     /* Match the left sidebar shell's SIDEBAR_OFFCANVAS_MOTION_CLASS slide
        (`duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]`) so the seam corner
        rounds/squares and the depth shadow fades IN STEP with the offcanvas animation
@@ -222,7 +222,7 @@
   }
 
   .dark .chat-content-card {
-    --seam-shadow-color: rgba(0, 0, 0, 0.25);
+    --seam-shadow-color: rgba(0, 0, 0, 0.36);
   }
 
   [data-sidebar-side="left"] .chat-content-card {
@@ -329,22 +329,21 @@
   }
 }
 
-/* Smooth entry for chat pane swaps (empty landing <-> transcript+bottom composer). */
+/* Fast opacity-only entry for chat pane swaps. Avoid vertical motion because the
+   empty landing can re-render in place when switching Home -> project. */
 @keyframes chat-pane-enter {
   from {
     opacity: 0;
-    transform: translateY(6px);
   }
 
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
 .chat-pane-enter {
-  animation: chat-pane-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
+  animation: chat-pane-enter 140ms ease-out;
+  will-change: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -550,7 +549,10 @@
 
 body {
   font-family: var(--font-ui-family);
-  letter-spacing: -0.015em;
+  /* Neutral tracking: let the system UI font (SF Pro on macOS via the
+     -apple-system fallback) use its own optical metrics instead of a squeezed
+     web-style negative tracking, so text reads native rather than "designed". */
+  letter-spacing: normal;
   margin: 0;
   padding: 0;
   min-height: 100vh;
@@ -559,7 +561,7 @@ body {
 /* Reuse the OS UI stack on chat surfaces that should feel native and utilitarian. */
 .font-system-ui {
   font-family: var(--font-ui-family);
-  letter-spacing: -0.015em;
+  letter-spacing: normal;
 }
 
 /* Keep transcript-only code surfaces on the chat-specific coding font stack. */
@@ -735,6 +737,30 @@ label:has(> select#reasoning-effort) select {
 
 .chat-markdown li + li {
   margin-top: 0.25rem;
+}
+
+/* GFM task lists: drop the bullet and paint the checkbox into the list gutter
+   where the bullet would have been (GitHub-style). */
+.chat-markdown li.task-list-item {
+  list-style: none;
+}
+
+.chat-markdown .chat-markdown-task-checkbox {
+  width: 0.95em;
+  height: 0.95em;
+  margin: 0 0.4em 0.1em -1.4em;
+  vertical-align: middle;
+  accent-color: var(--primary);
+}
+
+.chat-markdown .chat-markdown-task-checkbox:not(:disabled) {
+  cursor: pointer;
+}
+
+.chat-markdown hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .chat-markdown a {
@@ -1062,6 +1088,116 @@ label:has(> select#reasoning-effort) select {
   user-select: none;
 }
 
+/* Inline file-comment affordances (hover "+" gutter button, selected-line
+   highlight band, anchored comment box) are positioned as absolute children of
+   the scroll container, so it must establish the positioning context. They live
+   in content space and therefore scroll with the lines. */
+.editor-file-viewer {
+  position: relative;
+}
+
+/* Hover affordance painted over the line-number gutter: an opaque surface strip
+   (so it masks the number) holding a "+" chip, so the row reads as offering a
+   comment instead of showing its number. Width tracks the 4ch number column. */
+.editor-file-viewer__comment-add {
+  position: absolute;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  width: 4ch;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--color-background-surface);
+  cursor: pointer;
+}
+
+.editor-file-viewer__comment-add-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 0.3125rem;
+  background: var(--color-background-button-secondary);
+  color: color-mix(in srgb, var(--color-text-foreground) 70%, transparent);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.editor-file-viewer__comment-add:hover .editor-file-viewer__comment-add-glyph {
+  background: var(--color-text-accent);
+  color: var(--color-white, #fff);
+}
+
+/* Blue band over the line a comment box is open against (covers gutter + text);
+   translucent + non-interactive so the code stays readable and selectable. */
+.editor-file-viewer__comment-line-highlight {
+  position: absolute;
+  left: 0;
+  z-index: 1;
+  width: 100%;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-text-accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 0 var(--color-text-accent);
+}
+
+.editor-file-viewer__comment-box {
+  position: absolute;
+  z-index: 3;
+  margin-top: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  border-radius: 0.875rem;
+  background: var(--color-background-elevated-primary-opaque);
+  /* The box lives inside the file viewer, which sets the monospace code font on
+     its content; reset to the normal UI font so the comment chrome reads as app
+     UI, not code. Cascades to the header, textarea, and buttons. */
+  font-family: var(--font-ui-family);
+  box-shadow:
+    0 12px 34px -16px color-mix(in srgb, var(--color-black, #000) 30%, transparent),
+    0 1px 4px -2px color-mix(in srgb, var(--color-black, #000) 16%, transparent);
+}
+
+/* Rounded chip holding the Synara mark in the box header, echoing the source
+   file's row gutter badge so the comment reads as "from Synara". */
+.editor-file-viewer__comment-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.4375rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  background: var(--color-background-surface);
+}
+
+/* Borderless request field: it blends into the card so the box reads as one
+   surface (matching Codex's local-comment editor) rather than an input-in-a-box. */
+.editor-file-viewer__comment-input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  /* Override the global `textarea { font-family: mono }` reset — this field is
+     UI chrome, not code, so it must use the normal UI font. */
+  font-family: var(--font-ui-family);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-foreground);
+  outline: none;
+  resize: none;
+}
+
+.editor-file-viewer__comment-input::placeholder {
+  color: color-mix(in srgb, var(--color-text-foreground) 40%, transparent);
+}
+
 .editor-file-viewer--markdown-preview {
   background: color-mix(in srgb, var(--background) 96%, var(--card));
 }
@@ -1079,6 +1215,70 @@ label:has(> select#reasoning-effort) select {
 
 .editor-markdown-preview__body > :first-child {
   margin-top: 0;
+}
+
+/* Document typography for full-file markdown previews (dock file pane and
+   editor center pane share this wrapper). Scoped here so the chat transcript
+   keeps its compact message styling; Tailwind's preflight otherwise leaves
+   headings indistinguishable from body text. */
+.editor-markdown-preview .chat-markdown h1,
+.editor-markdown-preview .chat-markdown h2,
+.editor-markdown-preview .chat-markdown h3,
+.editor-markdown-preview .chat-markdown h4,
+.editor-markdown-preview .chat-markdown h5,
+.editor-markdown-preview .chat-markdown h6 {
+  margin: 1.5em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.editor-markdown-preview .chat-markdown h1 {
+  font-size: 1.75em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-markdown-preview .chat-markdown h2 {
+  font-size: 1.4em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-markdown-preview .chat-markdown h3 {
+  font-size: 1.2em;
+}
+
+.editor-markdown-preview .chat-markdown h4 {
+  font-size: 1.05em;
+}
+
+.editor-markdown-preview .chat-markdown h5 {
+  font-size: 0.95em;
+}
+
+.editor-markdown-preview .chat-markdown h6 {
+  font-size: 0.9em;
+  color: var(--muted-foreground);
+}
+
+/* Documents breathe more than chat replies. */
+.editor-markdown-preview .chat-markdown p,
+.editor-markdown-preview .chat-markdown ul,
+.editor-markdown-preview .chat-markdown ol,
+.editor-markdown-preview .chat-markdown blockquote,
+.editor-markdown-preview .chat-markdown pre,
+.editor-markdown-preview .chat-markdown table {
+  margin: 0.85rem 0;
+}
+
+.editor-markdown-preview .chat-markdown ul,
+.editor-markdown-preview .chat-markdown ol {
+  padding-left: 1.5rem;
+}
+
+.editor-markdown-preview .chat-markdown li + li {
+  margin-top: 0.35rem;
 }
 
 /* Local image preview used by editor file and diff views. */
@@ -1246,6 +1446,123 @@ label:has(> select#reasoning-effort) select {
   font-weight: 500;
 }
 
+/* In-app PDF viewer (pdf.js canvas + text/link layers). The scroll area centers
+   a stack of page sheets over a muted backdrop, matching the rest of the chrome. */
+.pdf-viewer-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: var(--app-user-message-background);
+}
+
+.pdf-viewer-page {
+  position: relative;
+  flex: 0 0 auto;
+  /* Auto inline margins center the sheet but collapse to 0 once it is wider than
+     the viewport, so zoomed-in pages stay fully scroll-reachable on the left. */
+  margin-inline: auto;
+  background: #fff;
+  border: 1px solid color-mix(in srgb, var(--border), var(--foreground) 10%);
+  overflow: hidden;
+}
+
+.pdf-viewer-page__canvas {
+  display: block;
+}
+
+/* pdf.js text layer: transparent, selectable runs positioned over the canvas. */
+.pdf-viewer-page__text-layer {
+  --scale-factor: 1;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  line-height: 1;
+  overflow: clip;
+}
+
+.pdf-viewer-page__text-layer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-viewer-page__text-layer span.markedContent {
+  top: 0;
+  height: 0;
+}
+
+.pdf-viewer-page__text-layer ::selection {
+  background: color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.pdf-viewer-page__text-layer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+  display: block;
+}
+
+.pdf-viewer-page__text-layer.selecting .endOfContent {
+  top: 0;
+}
+
+/* Clickable links (external URLs + internal page jumps) drawn over the canvas. */
+.pdf-viewer-page__link-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.pdf-viewer-page__link {
+  position: absolute;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.pdf-viewer-page__link:hover,
+.pdf-viewer-page__link:focus-visible {
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  outline: none;
+}
+
+/* Per-page render failure marker: a single broken page should report itself
+   rather than blend into the white sheet. */
+.pdf-viewer-page__error {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 16px;
+  text-align: center;
+  color: var(--destructive);
+  font-size: 12px;
+}
+
+.pdf-viewer-page__error-detail {
+  max-width: 90%;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  word-break: break-word;
+}
+
 /* Generated image preview/download card rendered inline from markdown ![alt](file.png) */
 .chat-generated-image {
   position: relative;
@@ -1325,6 +1642,118 @@ label:has(> select#reasoning-effort) select {
   }
   100% {
     background-position: -100% 0;
+  }
+}
+
+/* Text shimmer utility — vendored verbatim from shadcn 4.12.0
+   (dist/tailwind.css `@utility shimmer`). The full `shadcn` stylesheet is not
+   imported because it would clash with this project's custom theme, so the
+   self-contained shimmer block lives here instead. Applied on the
+   "Working for …" status line via the `shimmer` class. Provides `shimmer`,
+   `shimmer-duration-*`, `shimmer-spread-*`, `shimmer-angle-*`,
+   `shimmer-color-*`, `shimmer-once`, `shimmer-reverse`, and `shimmer-none`.
+   Docs: https://ui.shadcn.com/docs/utils/shimmer */
+@property --shimmer-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 20deg;
+}
+@property --shimmer-image {
+  syntax: "*";
+  inherits: false;
+}
+@property --shimmer-text-fill {
+  syntax: "*";
+  inherits: false;
+}
+
+@theme inline {
+  @keyframes tw-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+}
+
+@utility shimmer {
+  --_spread: var(--shimmer-spread, calc(3ch + 40px));
+  --_base: currentColor;
+  --_highlight: var(--shimmer-color, oklch(from currentColor l c h / calc(alpha* 0.2)));
+
+  background-image: var(
+    --shimmer-image,
+    linear-gradient(
+      calc(90deg + var(--shimmer-angle)),
+      var(--_base) calc(50% - var(--_spread)),
+      color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * 0.5),
+      var(--_highlight) 50%,
+      color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% + var(--_spread) * 0.5),
+      var(--_base) calc(50% + var(--_spread))
+    )
+  );
+  background-repeat: no-repeat;
+  background-size: calc(200% + var(--_spread) * 2) 100%;
+  background-position: 0 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
+  animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
+
+  @variant dark {
+    --_highlight: var(
+      --shimmer-color,
+      oklch(from currentColor max(0.8, calc(l + 0.4)) c h / calc(alpha + 0.4))
+    );
+  }
+
+  &:where([dir="rtl"], [dir="rtl"] *) {
+    animation-direction: reverse;
+  }
+}
+
+@utility shimmer-once {
+  animation-iteration-count: 1;
+}
+
+@utility shimmer-reverse {
+  animation-direction: reverse;
+}
+
+@utility shimmer-none {
+  --shimmer-image: none;
+  --shimmer-text-fill: currentColor;
+}
+
+@utility shimmer-color-* {
+  --shimmer-color: --value(--color, [color]);
+  --shimmer-color: color-mix(
+    in oklch,
+    --value(--color, [color]) calc(--modifier(integer) * 1%),
+    transparent
+  );
+}
+
+@utility shimmer-duration-* {
+  --shimmer-duration: calc(--value(integer) * 1ms);
+}
+
+@utility shimmer-spread-* {
+  --shimmer-spread: calc(var(--spacing) * --value(integer));
+  --shimmer-spread: --value([length], [percentage]);
+}
+
+@utility shimmer-angle-* {
+  --shimmer-angle: calc(--value(integer) * 1deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
   }
 }
 

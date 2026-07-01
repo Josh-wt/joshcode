@@ -1,3 +1,4 @@
+import { ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,15 +6,19 @@ import {
   buildProjectWorkspaceContext,
   hasWorkspaceContextSignature,
   patchThreadWorkspaceContext,
+  resolveActiveWorkspaceContextId,
+  resolvePrimaryWorkspaceContextId,
   resolveWorkspaceContextsBase,
   updateThreadWorkspaceContext,
   workspaceContextSignature,
 } from "./workspaceContextLogic";
 
 describe("workspaceContextLogic", () => {
+  const REPO_A = ProjectId.makeUnsafe("repo-a");
+  const REPO_B = ProjectId.makeUnsafe("repo-b");
   const baseContext = {
     id: "project:repo-b",
-    projectId: "repo-b" as const,
+    projectId: REPO_B,
     label: "Other Repo",
     role: "context" as const,
     accessMode: "read-write" as const,
@@ -53,7 +58,7 @@ describe("workspaceContextLogic", () => {
 
   it("builds distinct ids for two branches in the same repo", () => {
     const project = {
-      id: "repo-a" as const,
+      id: REPO_A,
       name: "Repo A",
       folderName: "repo-a",
       cwd: "/repos/a",
@@ -67,7 +72,7 @@ describe("workspaceContextLogic", () => {
   it("seeds the thread primary workspace before the first additional context is persisted", () => {
     const primary = {
       id: "primary",
-      projectId: "repo-a" as const,
+      projectId: REPO_A,
       label: "Repo A",
       role: "primary" as const,
       accessMode: "read-write" as const,
@@ -77,7 +82,7 @@ describe("workspaceContextLogic", () => {
       worktreePath: null,
     };
     const projectB = {
-      id: "repo-b" as const,
+      id: REPO_B,
       name: "Repo B",
       folderName: "repo-b",
       cwd: "/repos/b",
@@ -87,13 +92,41 @@ describe("workspaceContextLogic", () => {
 
     expect(resolveWorkspaceContextsBase([], primary)).toEqual([primary]);
     expect(next).toHaveLength(2);
-    expect(next[0]).toMatchObject({ id: "primary", projectId: "repo-a", role: "primary" });
-    expect(next[1]).toMatchObject({ projectId: "repo-b", role: "context" });
+    expect(next[0]).toMatchObject({ id: "primary", projectId: REPO_A, role: "primary" });
+    expect(next[1]).toMatchObject({ projectId: REPO_B, role: "context" });
+  });
+
+  it("keeps the thread primary id stable when resolving active context", () => {
+    const primary = {
+      id: "primary",
+      projectId: REPO_A,
+      label: "Repo A",
+      role: "primary" as const,
+      accessMode: "read-write" as const,
+      cwd: "/repos/a",
+      envMode: "local" as const,
+      branch: "main",
+      worktreePath: null,
+    };
+    const added = buildProjectWorkspaceContext({
+      project: {
+        id: REPO_A,
+        name: "Repo A",
+        folderName: "repo-a",
+        cwd: "/repos/a",
+      },
+      branch: "origin/feature",
+    });
+    const contexts = [primary, added];
+
+    expect(resolvePrimaryWorkspaceContextId(contexts)).toBe("primary");
+    expect(resolveActiveWorkspaceContextId(contexts, added.id)).toBe(added.id);
+    expect(resolveActiveWorkspaceContextId(contexts, null)).toBe("primary");
   });
 
   it("detects duplicate branch signatures within a context set", () => {
     const project = {
-      id: "repo-a" as const,
+      id: REPO_A,
       name: "Repo A",
       folderName: "repo-a",
       cwd: "/repos/a",

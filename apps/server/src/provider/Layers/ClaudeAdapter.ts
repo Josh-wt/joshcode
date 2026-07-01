@@ -35,6 +35,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  type ProviderSessionStartInput,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -80,7 +81,10 @@ import {
 } from "effect";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ensureClaudeCredentialsFresh } from "../../claudeCredentials.ts";
+import { prepareClaudeRuntimeEnvironment } from "../../claudeProcessEnv.ts";
 import { ServerConfig } from "../../config.ts";
+import { buildFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { positiveFiniteNumber } from "../tokenUsage.ts";
 import {
   ProviderAdapterProcessError,
@@ -200,6 +204,7 @@ interface ClaudeSessionContext {
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
+  lastInteractionMode: "default" | "plan" | undefined;
   currentApiModelId: string | undefined;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -907,6 +912,15 @@ function buildUserMessageEffect(
           bytes,
         }),
       );
+    }
+
+    const fileBlock = buildFileAttachmentsPromptBlock({
+      attachments: input.attachments,
+      attachmentsDir: dependencies.attachmentsDir,
+      include: "all-files",
+    });
+    if (fileBlock) {
+      sdkContent.push({ type: "text", text: fileBlock });
     }
 
     return buildUserMessage({ sdkContent });
@@ -1953,6 +1967,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.interruptRequestedTurnId === turnState.turnId) {
           context.interruptRequestedTurnId = undefined;
         }
+        context.lastInteractionMode = turnState.interactionMode;
         context.turnState = undefined;
         context.session = {
           ...context.session,
@@ -3286,6 +3301,25 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(ultracode ? { ultracode: true } : {}),
         };
         const claudeSubagents = buildClaudeSdkSubagents();
+        const claudeEnv = yield* Effect.tryPromise({
+          try: () =>
+            prepareClaudeRuntimeEnvironment({
+              homeDir: serverConfig.homeDir,
+            }).catch((cause) => {
+              console.warn(
+                "[claude] Failed to prepare runtime environment; falling back to process.env.",
+                cause,
+              );
+              return process.env;
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Failed to prepare Claude runtime environment",
+              cause,
+            }),
+        });
 
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -3316,7 +3350,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: process.env,
+          env: claudeEnv,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         };
 
@@ -3401,6 +3435,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
+          lastInteractionMode: undefined,
           currentApiModelId: apiModelId,
           resumeSessionId: sessionId,
           pendingApprovals,
@@ -3485,11 +3520,57 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
       });
 
+    const ensureFreshClaudeRuntimeBeforeTurn = (
+      context: ClaudeSessionContext,
+      modelSelection:
+        | Extract<ProviderSessionStartInput["modelSelection"], object>
+        | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const credentialsRefreshed = yield* Effect.tryPromise({
+          try: () =>
+            ensureClaudeCredentialsFresh({
+              homeDir: serverConfig.homeDir,
+            }).catch(() => false),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: context.session.threadId,
+              detail: "Failed to refresh Claude credentials",
+              cause,
+            }),
+        });
+        if (!credentialsRefreshed) {
+          return;
+        }
+
+        yield* Effect.logInfo("claude.session.recycle_after_credential_refresh", {
+          threadId: context.session.threadId,
+        });
+
+        yield* stopSessionInternal(context, { emitExitEvent: false });
+        yield* startSession({
+          threadId: context.session.threadId,
+          provider: PROVIDER,
+          runtimeMode: context.session.runtimeMode,
+          ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
+          workspaceContexts: context.session.workspaceContexts,
+          activeWorkspaceContextId: context.session.activeWorkspaceContextId,
+          ...(context.session.resumeCursor !== undefined
+            ? { resumeCursor: context.session.resumeCursor }
+            : {}),
+          ...(modelSelection ? { modelSelection } : {}),
+        });
+      });
+
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const context = yield* requireSession(input.threadId);
+        let context = yield* requireSession(input.threadId);
         const modelSelection =
           input.modelSelection?.provider === "claudeAgent" ? input.modelSelection : undefined;
+
+        yield* ensureFreshClaudeRuntimeBeforeTurn(context, modelSelection);
+        context = yield* requireSession(input.threadId);
         const requestedContextWindowMaxTokens = resolveSelectedClaudeContextWindowMaxTokens(
           modelSelection?.model,
           modelSelection?.options?.contextWindow,
@@ -3513,16 +3594,18 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
         }
 
-        // Apply interaction mode by switching the SDK's permission mode.
-        // "plan" maps directly to the SDK's "plan" permission mode;
-        // "default" restores the session's original permission mode.
-        // When interactionMode is absent we leave the current mode unchanged.
-        if (input.interactionMode === "plan") {
+        // Apply interaction mode on every turn so sticky SDK permission state
+        // cannot leak plan mode across service/recovery paths that omit it.
+        const effectiveInteractionMode = input.interactionMode ?? "default";
+        if (effectiveInteractionMode === "plan") {
           yield* Effect.tryPromise({
             try: () => context.query.setPermissionMode("plan"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
-        } else if (input.interactionMode === "default") {
+        } else if (
+          context.basePermissionMode !== undefined ||
+          context.lastInteractionMode === "plan"
+        ) {
           yield* Effect.tryPromise({
             try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
@@ -3533,7 +3616,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const turnState: ClaudeTurnState = {
           turnId,
           startedAt: yield* nowIso,
-          interactionMode: input.interactionMode === "plan" ? "plan" : "default",
+          interactionMode: effectiveInteractionMode,
           items: [],
           assistantTextBlocks: new Map(),
           assistantTextBlockOrder: [],
@@ -3832,7 +3915,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return { models: [], source: "pending", cached: false };
       });
 
-    const listAgents: NonNullable<ClaudeAdapterShape["listAgents"]> = () =>
+    const listAgents: NonNullable<ClaudeAdapterShape["listAgents"]> = (_input) =>
       Effect.sync(() => {
         if (cachedAgents) {
           return { ...cachedAgents, cached: true };
@@ -3871,6 +3954,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         supportsPluginMentions: false,
         supportsPluginDiscovery: false,
         supportsRuntimeModelList: true,
+        supportsLiveTurnDiffPatch: false,
       },
       startSession,
       sendTurn,

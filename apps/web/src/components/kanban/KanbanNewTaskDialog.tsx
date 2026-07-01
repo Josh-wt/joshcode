@@ -57,12 +57,18 @@ import { useProviderModelCatalog } from "~/hooks/useProviderModelCatalog";
 import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
 import { useProviderStatusesForLocalConfig } from "~/hooks/useProviderStatusesForLocalConfig";
 import { useComposerDropzone } from "~/hooks/useComposerDropzone";
+import { toastManager } from "~/components/ui/toast";
 import { useTheme } from "~/hooks/useTheme";
 import { ChevronRightIcon, PaperclipIcon } from "~/lib/icons";
 import { findProviderStatus } from "~/lib/providerAvailability";
+import { resolveProviderDiscoveryCwd } from "~/lib/providerDiscovery";
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
-import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
+import {
+  type ComposerFileAttachment,
+  type DraftThreadEnvMode,
+  useComposerDraftStore,
+} from "../../composerDraftStore";
 import { buildModelSelection } from "../../providerModelOptions";
 import { type ExpandedImagePreview } from "../chat/ExpandedImagePreview";
 import { useStore } from "../../store";
@@ -74,6 +80,10 @@ import { KanbanTaskProjectPicker } from "./KanbanTaskProjectPicker";
 import { useKanbanTaskComposerMenu } from "./useKanbanTaskComposerMenu";
 import { useKanbanTaskScratchDraft } from "./useKanbanTaskScratchDraft";
 import { useKanbanTaskSubmit } from "./useKanbanTaskSubmit";
+
+const EMPTY_COMPOSER_FILES: ReadonlyArray<ComposerFileAttachment> = [];
+
+function ignoreComposerFileRemoval(_fileId: string): void {}
 
 export interface KanbanNewTaskProjectOption {
   id: ProjectId;
@@ -120,6 +130,7 @@ export function KanbanNewTaskDialog({
     prompt,
     composerImages,
     composerAssistantSelections,
+    composerFileComments,
     composerTerminalContexts,
     composerSkills,
     composerMentions,
@@ -132,6 +143,7 @@ export function KanbanNewTaskDialog({
     addComposerImages,
     removeComposerImage,
     clearComposerAssistantSelections,
+    clearComposerFileComments,
     removeComposerTerminalContext,
   } = useKanbanTaskScratchDraft({ defaultProvider: settings.defaultProvider });
   const promptRef = useRef(prompt);
@@ -153,6 +165,11 @@ export function KanbanNewTaskDialog({
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  const providerModelDiscoveryCwd = resolveProviderDiscoveryCwd({
+    activeThreadWorktreePath: null,
+    activeProjectCwd: selectedProject?.cwd ?? null,
+    serverCwd: serverConfigQuery.data?.cwd ?? null,
+  });
 
   // Voice transcription always rides on the Codex ChatGPT session, regardless of
   // which provider the task targets — gate the mic on the Codex status.
@@ -176,6 +193,7 @@ export function KanbanNewTaskDialog({
     // Keep discovery warm whenever either picker can open so cursor/codex effort
     // and fast-mode controls are populated, not just the model list.
     discoveryEnabled: isModelPickerOpen || isTraitsPickerOpen,
+    cwd: providerModelDiscoveryCwd,
     modelHintByProvider,
   });
   const trimmedPrompt = prompt.trim();
@@ -183,6 +201,7 @@ export function KanbanNewTaskDialog({
     trimmedPrompt.length > 0 ||
     composerImages.length > 0 ||
     composerAssistantSelections.length > 0 ||
+    composerFileComments.length > 0 ||
     composerTerminalContexts.some((context) => context.text.trim().length > 0);
   const taskPreview = buildKanbanTaskPreview({
     trimmedPrompt,
@@ -207,6 +226,9 @@ export function KanbanNewTaskDialog({
     providerStatuses,
     onOpenChange,
   });
+  const handleCreateRequest = useCallback(() => {
+    void handleCreate();
+  }, [handleCreate]);
   const {
     composerCursor,
     composerTrigger,
@@ -247,7 +269,7 @@ export function KanbanNewTaskDialog({
     piAgentDir: settings.piAgentDir || null,
     handleProviderModelChange,
     setInteractionMode,
-    onCreate: handleCreate,
+    onCreate: handleCreateRequest,
   });
 
   // Providers without a static default (e.g. Pi) resolve their model once
@@ -279,7 +301,8 @@ export function KanbanNewTaskDialog({
     activeThreadId: null,
     threadId: scratchThreadId,
     selectedProvider,
-    activeProviderStatus: voiceProviderStatus,
+    authStatus: voiceProviderStatus?.authStatus ?? null,
+    voiceTranscriptionAvailable: voiceProviderStatus?.voiceTranscriptionAvailable !== false,
     pendingUserInputCount: 0,
     onTranscriptReady: handleTranscriptReady,
     refreshVoiceStatus: refreshProviderStatuses,
@@ -302,10 +325,10 @@ export function KanbanNewTaskDialog({
     (event: React.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
-        handleCreate();
+        handleCreateRequest();
       }
     },
-    [handleCreate],
+    [handleCreateRequest],
   );
 
   const {
@@ -316,6 +339,19 @@ export function KanbanNewTaskDialog({
     onComposerDrop,
   } = useComposerDropzone({
     addImages: addComposerImages,
+    fileSupport: {
+      genericFiles: "reject",
+      onUnsupportedFiles: (files) => {
+        toastManager.add({
+          type: "warning",
+          title: "Only images can be attached to new tasks.",
+          description:
+            files.length === 1
+              ? "That file was not added."
+              : `${files.length} files were not added.`,
+        });
+      },
+    },
     appendReferenceText: appendComposerPromptText,
     dragDepthRef,
     focusComposer: scheduleComposerFocus,
@@ -412,10 +448,14 @@ export function KanbanNewTaskDialog({
             ) : null}
             <ComposerReferenceAttachments
               assistantSelections={composerAssistantSelections}
+              fileComments={composerFileComments}
+              files={EMPTY_COMPOSER_FILES}
               images={composerImages}
               nonPersistedImageIdSet={nonPersistedComposerImageIdSet}
               onExpandImage={setExpandedImage}
               onRemoveAssistantSelections={clearComposerAssistantSelections}
+              onRemoveFileComments={clearComposerFileComments}
+              onRemoveFile={ignoreComposerFileRemoval}
               onRemoveImage={removeComposerImage}
             />
             <ComposerPromptEditor
@@ -543,7 +583,7 @@ export function KanbanNewTaskDialog({
                 />
                 Send as draft
               </label>
-              <Button size="sm" onClick={handleCreate} disabled={!canCreate}>
+              <Button size="sm" onClick={handleCreateRequest} disabled={!canCreate}>
                 {isCreating ? "Creating..." : "Create task"}
               </Button>
             </div>

@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
+import { prepareWindowsSafeProcess } from "@t3tools/shared/windowsProcess";
 import { ServiceMap, Schema, Effect, Layer } from "effect";
 import {
   getEditorMacApplications,
@@ -499,10 +500,12 @@ export const launchDetached = (launch: EditorLaunch) =>
     yield* Effect.callback<void, OpenError>((resume) => {
       let child;
       try {
-        child = spawn(launch.command, [...launch.args], {
+        const prepared = prepareWindowsSafeProcess(launch.command, launch.args);
+        child = spawn(prepared.command, prepared.args, {
           detached: true,
           stdio: "ignore",
-          shell: process.platform === "win32",
+          shell: prepared.shell,
+          windowsHide: prepared.windowsHide,
         });
       } catch (error) {
         return resume(
@@ -534,7 +537,17 @@ const make = Effect.gen(function* () {
         try: () => open.default(target),
         catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
       }),
-    openInEditor: (input) => Effect.flatMap(resolveEditorLaunch(input), launchDetached),
+    openInEditor: (input) =>
+      // The "system-default" pseudo-editor opens the target with the OS default
+      // application (Preview for PDFs on macOS, the registered viewer elsewhere).
+      // Reuse the already-loaded cross-platform `open` package instead of guessing
+      // per-platform launch commands.
+      input.editor === "system-default"
+        ? Effect.tryPromise({
+            try: () => open.default(input.cwd),
+            catch: (cause) => new OpenError({ message: "Failed to open with default app", cause }),
+          })
+        : Effect.flatMap(resolveEditorLaunch(input), launchDetached),
     runDetachedShellCommand: (input) =>
       launchDetached(resolveDetachedShellLaunch(input.command)),
   } satisfies OpenShape;

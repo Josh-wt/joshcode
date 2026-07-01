@@ -81,6 +81,18 @@ function whenAnd(left: KeybindingWhenNode, right: KeybindingWhenNode): Keybindin
   return { type: "and", left, right };
 }
 
+function whenOr(left: KeybindingWhenNode, right: KeybindingWhenNode): KeybindingWhenNode {
+  return { type: "or", left, right };
+}
+
+// Mirrors the production `whenCreationAllowed` guard: new-surface chords fire outside the
+// terminal everywhere, and also from the terminal on macOS (where Cmd-chords never reach
+// the shell). `isMac` is derived from the platform inside resolveContext.
+const whenCreationAllowed = whenOr(
+  whenNot(whenIdentifier("terminalFocus")),
+  whenIdentifier("isMac"),
+);
+
 interface TestBinding {
   shortcut: KeybindingShortcut;
   command: KeybindingCommand;
@@ -159,6 +171,11 @@ const DEFAULT_BINDINGS = compile([
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
+    shortcut: modShortcut("l", { metaKey: true, modKey: false }),
+    command: "composer.focus.toggle",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
     shortcut: modShortcut("u", { shiftKey: true }),
     command: "settings.usage",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
@@ -176,42 +193,42 @@ const DEFAULT_BINDINGS = compile([
   {
     shortcut: modShortcut("n"),
     command: "chat.new",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("n", { shiftKey: true }),
     command: "chat.newLatestProject",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("n", { altKey: true }),
     command: "chat.newChat",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("t", { shiftKey: true }),
     command: "chat.newTerminal",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("c", { altKey: true }),
     command: "chat.newClaude",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("x", { altKey: true }),
     command: "chat.newCodex",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("r", { altKey: true }),
     command: "chat.newCursor",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: modShortcut("g", { altKey: true }),
     command: "chat.newGemini",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
+    whenAst: whenCreationAllowed,
   },
   {
     shortcut: ctrlShortcut("tab"),
@@ -481,6 +498,33 @@ describe("settings shortcuts", () => {
   });
 });
 
+describe("composer focus shortcuts", () => {
+  it("toggles composer focus with Cmd+L outside terminal focus", () => {
+    assert.equal(
+      resolveShortcutCommand(event({ key: "l", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "composer.focus.toggle",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "l", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+    );
+  });
+
+  it("does not treat Ctrl+L as the composer focus shortcut on non-macOS", () => {
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "l", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+    );
+  });
+});
+
 describe("recent view shortcuts", () => {
   it("resolves Ctrl+Tab outside terminal focus", () => {
     assert.strictEqual(
@@ -745,6 +789,10 @@ describe("shortcutLabelForCommand", () => {
       "⇧⌘E",
     );
     assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "composer.focus.toggle", "MacIntel"),
+      "⌘L",
+    );
+    assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "terminal.workspace.terminal", "MacIntel"),
       "⌘1",
     );
@@ -783,9 +831,18 @@ describe("chat/editor shortcuts", () => {
         platform: "Linux",
       }),
     );
-    assert.isFalse(
+    // macOS: Cmd+N still creates a new chat even from terminal focus — xterm never
+    // forwards the Cmd-chord to the shell, so the old `!terminalFocus` block just lost it.
+    assert.isTrue(
       isChatNewShortcut(event({ key: "n", metaKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+    );
+    // Linux/Windows: Ctrl+N is real shell input, so terminal focus must still block it.
+    assert.isFalse(
+      isChatNewShortcut(event({ key: "n", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
         context: { terminalFocus: true },
       }),
     );
@@ -920,6 +977,68 @@ describe("chat/editor shortcuts", () => {
         },
       ),
       "chat.newGemini",
+    );
+  });
+
+  it("resolves new-surface chords from terminal focus on macOS but not on other platforms", () => {
+    const macTerminal = { platform: "MacIntel", context: { terminalFocus: true } } as const;
+    const linuxTerminal = { platform: "Linux", context: { terminalFocus: true } } as const;
+
+    // macOS: Cmd-chords never reach the shell, so creating a new surface still works.
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "t", metaKey: true, shiftKey: true }),
+        DEFAULT_BINDINGS,
+        macTerminal,
+      ),
+      "chat.newTerminal",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "n", metaKey: true, shiftKey: true }),
+        DEFAULT_BINDINGS,
+        macTerminal,
+      ),
+      "chat.newLatestProject",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "n", metaKey: true, altKey: true }),
+        DEFAULT_BINDINGS,
+        macTerminal,
+      ),
+      "chat.newChat",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "c", metaKey: true, altKey: true }),
+        DEFAULT_BINDINGS,
+        macTerminal,
+      ),
+      "chat.newClaude",
+    );
+
+    // Linux/Windows: the same chords are real shell input, so terminal focus blocks them.
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: "t", ctrlKey: true, shiftKey: true }),
+        DEFAULT_BINDINGS,
+        linuxTerminal,
+      ),
+    );
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: "c", ctrlKey: true, altKey: true }),
+        DEFAULT_BINDINGS,
+        linuxTerminal,
+      ),
+    );
+    assert.isNull(
+      resolveShortcutCommand(
+        event({ key: "n", ctrlKey: true, altKey: true }),
+        DEFAULT_BINDINGS,
+        linuxTerminal,
+      ),
     );
   });
 
@@ -1174,6 +1293,44 @@ describe("resolveShortcutCommand", () => {
         context: { terminalFocus: false },
       }),
       "traitsPicker.toggle",
+    );
+  });
+
+  it("falls back to creation defaults with the macOS terminal-focus escape hatch", () => {
+    const legacyBindings = DEFAULT_BINDINGS.filter(
+      (binding) => binding.command !== "chat.new" && binding.command !== "chat.newTerminal",
+    );
+    const macTerminal = { platform: "MacIntel", context: { terminalFocus: true } } as const;
+    const linuxTerminal = { platform: "Linux", context: { terminalFocus: true } } as const;
+
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "n", metaKey: true }), legacyBindings, macTerminal),
+      "chat.new",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "t", metaKey: true, shiftKey: true }),
+        legacyBindings,
+        macTerminal,
+      ),
+      "chat.newTerminal",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "n", ctrlKey: true }), legacyBindings, linuxTerminal),
+    );
+  });
+
+  it("falls back to the composer focus default when runtime config is missing it", () => {
+    const legacyBindings = DEFAULT_BINDINGS.filter(
+      (binding) => binding.command !== "composer.focus.toggle",
+    );
+
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "l", metaKey: true }), legacyBindings, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "composer.focus.toggle",
     );
   });
 

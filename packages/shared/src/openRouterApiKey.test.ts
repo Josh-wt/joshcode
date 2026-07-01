@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
 
+import * as Fs from "node:fs";
+
 import {
   isOpenRouterVoiceTranscriptionConfigured,
   readOpenRouterApiKeyFromFile,
   resolveOpenRouterApiKey,
 } from "./openRouterApiKey";
+
+const readFileSyncMock = ((...args: Parameters<typeof Fs.readFileSync>) => {
+  const encoding = args[1];
+  if (encoding === "utf8" || (typeof encoding === "object" && encoding?.encoding === "utf8")) {
+    return "file-key";
+  }
+  return Buffer.from("file-key");
+}) as typeof Fs.readFileSync;
 
 describe("resolveOpenRouterApiKey", () => {
   it("prefers the OPENROUTER_API_KEY environment variable", () => {
@@ -13,7 +23,7 @@ describe("resolveOpenRouterApiKey", () => {
         env: { OPENROUTER_API_KEY: " env-key " },
         baseDir: "/tmp/synara",
         existsSync: () => true,
-        readFileSync: () => "file-key",
+        readFileSync: readFileSyncMock,
       }),
     ).toBe("env-key");
   });
@@ -23,7 +33,7 @@ describe("resolveOpenRouterApiKey", () => {
       env: {},
       baseDir: "/tmp/synara",
       existsSync: (path) => path === "/tmp/synara/userdata/openrouter-api-key",
-      readFileSync: () => "file-key\n",
+      readFileSync: readFileSyncMock,
     });
     expect(key).toBe("file-key");
   });
@@ -35,6 +45,6 @@ describe("resolveOpenRouterApiKey", () => {
         baseDir: "/tmp/synara",
       }),
     ).toBe(true);
-    expect(readOpenRouterApiKeyFromFile("/missing", () => "", () => false)).toBeNull();
+    expect(readOpenRouterApiKeyFromFile("/missing", readFileSyncMock, () => false)).toBeNull();
   });
 });

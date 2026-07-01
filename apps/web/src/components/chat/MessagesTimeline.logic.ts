@@ -51,6 +51,10 @@ export type MessagesTimelineRow =
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
+      // True while this row's turn is still running. The end-of-turn changes
+      // card (Undo / Review) is held back until the turn settles so it cannot
+      // pre-empt the composer's live changes strip mid-turn.
+      assistantTurnInProgress?: boolean | undefined;
       revertTurnCount?: number | undefined;
     }
   | {
@@ -317,6 +321,7 @@ export function deriveMessagesTimelineRows(input: {
         timelineEntry.message.role === "assistant" &&
         terminalAssistantMessageIds.has(timelineEntry.message.id),
       assistantCopyStreaming: timelineEntry.message.streaming || assistantTurnStillInProgress,
+      assistantTurnInProgress: assistantTurnStillInProgress,
       assistantTurnDiffSummary:
         timelineEntry.message.role === "assistant"
           ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
@@ -349,22 +354,20 @@ export function deriveMessagesTimelineRows(input: {
   return nextRows;
 }
 
-// Returns the id of the most recent terminal assistant message row, used to keep
-// the live turn expanded when `activeTurnInProgress` is true but no explicit
-// `activeTurnId` is available (a transient window during turn settle).
-function findLastTerminalAssistantMessageId(
+// Returns the terminal assistant only when it is still the transcript tail.
+// A newer user message means the next turn has begun but has not produced text yet.
+function findTailTerminalAssistantMessageId(
   rows: ReadonlyArray<MessagesTimelineRow>,
   terminalAssistantMessageIds: ReadonlySet<string>,
 ): string | null {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
-    if (
-      row.kind === "message" &&
-      row.message.role === "assistant" &&
-      terminalAssistantMessageIds.has(row.message.id)
-    ) {
-      return row.message.id;
+    if (row.kind !== "message") {
+      continue;
     }
+    return row.message.role === "assistant" && terminalAssistantMessageIds.has(row.message.id)
+      ? row.message.id
+      : null;
   }
   return null;
 }
@@ -385,7 +388,7 @@ function collapseSettledTurns(
 ): void {
   const { terminalAssistantMessageIds, activeTurnInProgress, activeTurnId } = options;
   const lastTerminalAssistantMessageId = activeTurnInProgress
-    ? findLastTerminalAssistantMessageId(rows, terminalAssistantMessageIds)
+    ? findTailTerminalAssistantMessageId(rows, terminalAssistantMessageIds)
     : null;
 
   const collectWorkItems = (entries: ReadonlyArray<WorkLogEntry>, into: CollapsedTurnItem[]) => {
@@ -545,6 +548,61 @@ function workLogSubagentsEqual(
   });
 }
 
+// Automation card fields are visible row content, so stale equality would freeze the transcript UI.
+function workLogAutomationsEqual(a: WorkLogEntry["automation"], b: WorkLogEntry["automation"]) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.id === b.id && a.name === b.name && a.cadenceLabel === b.cadenceLabel;
+}
+
+function workLogToolOutputsEqual(
+  a: NonNullable<WorkLogEntry["toolDetails"]>["output"],
+  b: NonNullable<WorkLogEntry["toolDetails"]>["output"],
+) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.output === b.output &&
+    a.stdout === b.stdout &&
+    a.stderr === b.stderr &&
+    a.exitCode === b.exitCode &&
+    a.truncated === b.truncated
+  );
+}
+
+function workLogToolEditsEqual(
+  left: NonNullable<WorkLogEntry["toolDetails"]>["edits"],
+  right: NonNullable<WorkLogEntry["toolDetails"]>["edits"],
+) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (left.length !== right.length) return false;
+  return left.every((edit, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      edit.path === other.path &&
+      edit.oldText === other.oldText &&
+      edit.newText === other.newText
+    );
+  });
+}
+
+function workLogToolDetailsEqual(a: WorkLogEntry["toolDetails"], b: WorkLogEntry["toolDetails"]) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.kind === b.kind &&
+    a.title === b.title &&
+    a.command === b.command &&
+    a.diff === b.diff &&
+    a.content === b.content &&
+    stringArraysEqual(a.files, b.files) &&
+    workLogToolOutputsEqual(a.output, b.output) &&
+    workLogToolEditsEqual(a.edits, b.edits)
+  );
+}
+
 function workLogEntryContentEqual(a: WorkLogEntry, b: WorkLogEntry): boolean {
   return (
     a.id === b.id &&
@@ -563,7 +621,9 @@ function workLogEntryContentEqual(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.toolCallId === b.toolCallId &&
     stringArraysEqual(a.changedFiles, b.changedFiles) &&
     workLogSubagentActionsEqual(a.subagentAction, b.subagentAction) &&
-    workLogSubagentsEqual(a.subagents, b.subagents)
+    workLogSubagentsEqual(a.subagents, b.subagents) &&
+    workLogAutomationsEqual(a.automation, b.automation) &&
+    workLogToolDetailsEqual(a.toolDetails, b.toolDetails)
   );
 }
 
@@ -633,6 +693,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.durationStart === bm.durationStart &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
+        a.assistantTurnInProgress === bm.assistantTurnInProgress &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
         a.revertTurnCount === bm.revertTurnCount
       );

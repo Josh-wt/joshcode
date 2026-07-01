@@ -35,6 +35,7 @@ import {
   shouldHandleTerminalSelectionMouseUp,
   terminalSelectionActionDelayForClickCount,
 } from "./terminal/terminalSelectionActions";
+import { showTerminalContextMenu } from "./terminal/terminalContextMenu";
 import {
   buildTerminalRuntimeKey,
   terminalRuntimeRegistry,
@@ -122,7 +123,7 @@ interface TerminalViewportProps {
     terminalId: string,
     activity: { hasRunningSubprocess: boolean; agentState: TerminalActivityState | null },
   ) => void;
-  onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  onAddTerminalContext?: ((selection: TerminalContextSelection) => void) | undefined;
   focusRequestId: number;
   autoFocus: boolean;
   isVisible: boolean;
@@ -350,34 +351,47 @@ function TerminalViewport({
     };
   }, [terminalId]);
 
+  const showTerminalMenu = useCallback(
+    async (position: { x: number; y: number }) => {
+      if (selectionActionOpenRef.current) {
+        return;
+      }
+      const activeTerminal = terminalRef.current;
+      if (!activeTerminal) {
+        clearSelectionAction();
+        return;
+      }
+
+      const nextAction = readSelectionAction();
+      const requestId = ++selectionActionRequestIdRef.current;
+      selectionActionOpenRef.current = true;
+      try {
+        await showTerminalContextMenu({
+          terminal: activeTerminal,
+          position: nextAction?.position ?? position,
+          canAddToChat: onAddTerminalContextRef.current !== undefined,
+          onAddToChat: onAddTerminalContextRef.current,
+          contextSelection: nextAction?.selection ?? null,
+        });
+        if (requestId !== selectionActionRequestIdRef.current) {
+          return;
+        }
+        terminalRuntimeRegistry.focus(runtimeKey);
+      } finally {
+        selectionActionOpenRef.current = false;
+      }
+    },
+    [clearSelectionAction, readSelectionAction, runtimeKey],
+  );
+
   const showSelectionAction = useCallback(async () => {
-    if (selectionActionOpenRef.current) {
-      return;
-    }
-    const nextAction = readSelectionAction();
-    if (!nextAction) {
+    const pointer = selectionPointerRef.current;
+    if (!pointer) {
       clearSelectionAction();
       return;
     }
-    const api = readNativeApi();
-    if (!api) return;
-    const requestId = ++selectionActionRequestIdRef.current;
-    selectionActionOpenRef.current = true;
-    try {
-      const clicked = await api.contextMenu.show(
-        [{ id: "add-to-chat", label: "Add to chat" }],
-        nextAction.position,
-      );
-      if (requestId !== selectionActionRequestIdRef.current || clicked !== "add-to-chat") {
-        return;
-      }
-      onAddTerminalContextRef.current(nextAction.selection);
-      terminalRef.current?.clearSelection();
-      terminalRuntimeRegistry.focus(runtimeKey);
-    } finally {
-      selectionActionOpenRef.current = false;
-    }
-  }, [clearSelectionAction, readSelectionAction, runtimeKey]);
+    await showTerminalMenu(pointer);
+  }, [clearSelectionAction, showTerminalMenu]);
 
   useEffect(() => {
     const terminal = terminalInstance;
@@ -415,16 +429,26 @@ function TerminalViewport({
       selectionGestureActiveRef.current = event.button === 0;
     };
 
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearSelectionAction();
+      selectionPointerRef.current = { x: event.clientX, y: event.clientY };
+      void showTerminalMenu({ x: event.clientX, y: event.clientY });
+    };
+
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
+    mount.addEventListener("contextmenu", handleContextMenu);
     return () => {
       selectionDisposable.dispose();
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
+      mount.removeEventListener("contextmenu", handleContextMenu);
       clearSelectionAction();
       selectionGestureActiveRef.current = false;
     };
-  }, [clearSelectionAction, showSelectionAction, terminalInstance]);
+  }, [clearSelectionAction, showSelectionAction, showTerminalMenu, terminalInstance]);
 
   return (
     <div className="h-full min-h-0 w-full bg-[var(--color-background-surface)] p-3">
@@ -439,7 +463,10 @@ function TerminalViewport({
         />
         <TerminalRuntimeStatusOverlay status={runtimeStatus} />
         <TerminalScrollToBottom terminal={terminalInstance} />
-        <div ref={containerRef} className="h-full w-full" />
+        <div
+          ref={containerRef}
+          className="h-full w-full [-webkit-app-region:no-drag]"
+        />
       </div>
     </div>
   );
@@ -485,7 +512,7 @@ interface ThreadTerminalDrawerProps {
     terminalId: string,
     activity: { hasRunningSubprocess: boolean; agentState: TerminalActivityState | null },
   ) => void;
-  onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  onAddTerminalContext?: ((selection: TerminalContextSelection) => void) | undefined;
   onTogglePresentationMode?: (() => void) | undefined;
   onTogglePanel?: (() => void) | undefined;
   isPanelOpen?: boolean | undefined;

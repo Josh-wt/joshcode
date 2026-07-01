@@ -3,7 +3,8 @@
 // Layer: Route UI logic helpers.
 // Exports: thread title fallback, deep-link bootstrap replay handling, and panel toggle helpers.
 
-import { type ProjectId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import type { ProjectId, ThreadEnvironmentMode, ThreadId, TurnId } from "@t3tools/contracts";
+import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadEnvironment";
 import { workspaceRootsEqual } from "@t3tools/shared/threadWorkspace";
 
 import { findWorkspaceRootMatch } from "../components/Sidebar.logic";
@@ -58,10 +59,12 @@ export interface SplitPaneWorkspaceDraftPlan {
   worktreePath: string | null;
 }
 
+import type { Project } from "../types";
+
 export function resolveSplitPaneWorkspaceDraftPlan(input: {
   workspaceRoot: string;
   homeDir: string | null;
-  projects: ReadonlyArray<{ id: ProjectId; cwd: string; kind: string }>;
+  projects: ReadonlyArray<Pick<Project, "id" | "cwd" | "kind" | "name" | "remoteName">>;
   threads: ReadonlyArray<{ projectId: ProjectId; worktreePath?: string | null }>;
 }): SplitPaneWorkspaceDraftPlan | null {
   const matchedProject = findWorkspaceRootMatch(
@@ -70,7 +73,9 @@ export function resolveSplitPaneWorkspaceDraftPlan(input: {
     (project) => project.cwd,
   );
   const homeProject =
-    input.homeDir !== null ? findHomeChatContainerProject(input.projects, input.homeDir) : null;
+    input.homeDir !== null
+      ? findHomeChatContainerProject(input.projects, { homeDir: input.homeDir })
+      : null;
   const threadWithWorktree = input.threads.find(
     (thread) =>
       thread.worktreePath && workspaceRootsEqual(thread.worktreePath, input.workspaceRoot),
@@ -100,6 +105,19 @@ export function resolveSplitPaneWorkspaceDraftPlan(input: {
     envMode: "worktree",
     worktreePath: input.workspaceRoot,
   };
+}
+
+// File previews follow the thread runtime cwd so worktree chats open the files they actually edit.
+export function resolveFilePreviewWorkspaceRoot(input: {
+  projectCwd?: string | null | undefined;
+  threadEnvMode?: ThreadEnvironmentMode | null | undefined;
+  threadWorktreePath?: string | null | undefined;
+}): string | null {
+  return resolveThreadWorkspaceCwd({
+    projectCwd: input.projectCwd,
+    envMode: input.threadEnvMode,
+    worktreePath: input.threadWorktreePath,
+  });
 }
 
 function createRoutePanelSearchKey(input: {

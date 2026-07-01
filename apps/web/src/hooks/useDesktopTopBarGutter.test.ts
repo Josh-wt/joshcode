@@ -16,7 +16,6 @@ describe("shouldReserveDesktopTopBarTrafficLightGutter", () => {
       shouldReserveDesktopTopBarTrafficLightGutter({
         isElectron: false,
         isMacDesktop: true,
-        sidebarOpen: false,
         isMobile: false,
       }),
     ).toBe(false);
@@ -27,45 +26,29 @@ describe("shouldReserveDesktopTopBarTrafficLightGutter", () => {
       shouldReserveDesktopTopBarTrafficLightGutter({
         isElectron: true,
         isMacDesktop: false,
-        sidebarOpen: false,
         isMobile: false,
       }),
     ).toBe(false);
   });
 
-  it("lets the sidebar provide the gutter when it is open on desktop", () => {
+  it("reserves a gutter on macOS desktop because the unified top bar owns the left edge", () => {
     expect(
       shouldReserveDesktopTopBarTrafficLightGutter({
         isElectron: true,
         isMacDesktop: true,
-        sidebarOpen: true,
-        isMobile: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("reserves a gutter when the sidebar is collapsed on desktop", () => {
-    expect(
-      shouldReserveDesktopTopBarTrafficLightGutter({
-        isElectron: true,
-        isMacDesktop: true,
-        sidebarOpen: false,
         isMobile: false,
       }),
     ).toBe(true);
   });
 
   it("reserves a gutter on mobile because the drawer floats over content", () => {
-    for (const sidebarOpen of [true, false]) {
-      expect(
-        shouldReserveDesktopTopBarTrafficLightGutter({
-          isElectron: true,
-          isMacDesktop: true,
-          sidebarOpen,
-          isMobile: true,
-        }),
-      ).toBe(true);
-    }
+    expect(
+      shouldReserveDesktopTopBarTrafficLightGutter({
+        isElectron: true,
+        isMacDesktop: true,
+        isMobile: true,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -74,25 +57,25 @@ describe("shouldReserveDesktopTopBarWindowControlsGutter", () => {
     expect(
       shouldReserveDesktopTopBarWindowControlsGutter({
         isElectron: false,
-        isWindowsDesktop: true,
+        isFramelessDesktop: true,
       }),
     ).toBe(false);
   });
 
-  it("never reserves a gutter for non-Windows desktop windows", () => {
+  it("never reserves a gutter when the native window frame is still present", () => {
     expect(
       shouldReserveDesktopTopBarWindowControlsGutter({
         isElectron: true,
-        isWindowsDesktop: false,
+        isFramelessDesktop: false,
       }),
     ).toBe(false);
   });
 
-  it("reserves a gutter for Windows Electron caption controls", () => {
+  it("reserves a gutter for frameless Electron caption controls", () => {
     expect(
       shouldReserveDesktopTopBarWindowControlsGutter({
         isElectron: true,
-        isWindowsDesktop: true,
+        isFramelessDesktop: true,
       }),
     ).toBe(true);
   });

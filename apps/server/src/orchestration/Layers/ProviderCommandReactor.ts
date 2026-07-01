@@ -16,6 +16,7 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationThread,
   ThreadId,
+  ThreadWorkspaceContext,
   type ProviderSession,
   type RuntimeMode,
   TurnId,
@@ -31,6 +32,7 @@ import {
   resolveTailUserMessageEditTarget,
 } from "@t3tools/shared/conversationEdit";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { buildStalePendingRequestFailureDetail } from "@t3tools/shared/threadSummary";
 import {
   resolveThreadWorkspaceCwds,
   resolveThreadWorkspaceState,
@@ -50,6 +52,7 @@ import {
   type BranchNameGenerationInput,
   type ThreadTitleGenerationInput,
 } from "../../git/Services/TextGeneration.ts";
+import { resolveTextGenerationInputForSelection } from "../../git/textGenerationSelection.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
@@ -124,7 +127,7 @@ function attachmentTitleSeed(attachment: ChatAttachment | undefined): string {
   if (!attachment) {
     return "";
   }
-  if (attachment.type === "image") {
+  if (attachment.type === "image" || attachment.type === "file") {
     return attachment.name;
   }
   return attachment.text.trim();
@@ -160,11 +163,13 @@ const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const HANDOFF_CONTEXT_WRAPPER_OVERHEAD =
   "<handoff_context>\n\n</handoff_context>\n\n<latest_user_message>\n\n</latest_user_message>"
     .length;
-const SIDECHAT_BOUNDARY_INSTRUCTION =
-  "You are in a sidechat. Treat all prior conversation as reference-only context. Do not continue any prior task automatically. Do not mutate files, git, or the workspace and do not run workspace-changing commands unless the latest user message explicitly asks you to do so after this boundary. Use this sidechat for focused explanation, safety checks, summaries, and alternatives.";
+import {
+  resolveSidechatBoundaryInstruction,
+  SIDECHAT_READONLY_BOUNDARY_INSTRUCTION,
+} from "@t3tools/shared/sidechatWorkspace";
 
-function wrapSidechatInput(messageText: string): string {
-  return `<sidechat_boundary>\n${SIDECHAT_BOUNDARY_INSTRUCTION}\n</sidechat_boundary>\n\n<latest_user_message>\n${messageText}\n</latest_user_message>`;
+function wrapSidechatInput(messageText: string, instruction: string): string {
+  return `<sidechat_boundary>\n${instruction}\n</sidechat_boundary>\n\n<latest_user_message>\n${messageText}\n</latest_user_message>`;
 }
 
 function escapeWorkspaceContextAttribute(value: string): string {
@@ -177,7 +182,7 @@ function escapeWorkspaceContextAttribute(value: string): string {
 
 function buildWorkspaceContextPreamble(
   contexts: ReadonlyArray<{
-    readonly context: OrchestrationThread["workspaceContexts"][number];
+    readonly context: ThreadWorkspaceContext;
     readonly cwd: string | null;
     readonly primary: boolean;
   }>,
@@ -254,13 +259,6 @@ function isRollbackStillInProgressError(error: unknown): boolean {
   );
 }
 
-function stalePendingRequestDetail(
-  requestKind: "approval" | "user-input",
-  requestId: string,
-): string {
-  return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
-}
-
 function buildGeneratedWorktreeBranchName(raw: string): string {
   const normalized = raw
     .trim()
@@ -280,12 +278,6 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 
   const safeFragment = branchFragment.length > 0 ? branchFragment : "update";
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
-}
-
-function hasDedicatedTextGenerationProvider(provider: ProviderKind | undefined): boolean {
-  return (
-    provider === "codex" || provider === "cursor" || provider === "kilo" || provider === "opencode"
-  );
 }
 
 const make = Effect.gen(function* () {
@@ -347,7 +339,7 @@ const make = Effect.gen(function* () {
   ) {
     const projectIds = new Set([
       thread.projectId,
-      ...thread.workspaceContexts.map((context) => context.projectId),
+      ...(thread.workspaceContexts ?? []).map((context) => context.projectId),
     ]);
     const projects: OrchestrationProjectShell[] = [];
     for (const projectId of projectIds) {
@@ -377,30 +369,6 @@ const make = Effect.gen(function* () {
   const editResendTurnStartKeys = new Set<string>();
   const drainingQueuedTurns = new Set<string>();
   const sidechatContextBootstrapThreadIds = new Set<string>();
-
-  const resolveTextGenerationInputForSelection = (
-    modelSelection: ModelSelection | undefined,
-    providerOptions: ProviderStartOptions | undefined,
-  ) => {
-    if (!hasDedicatedTextGenerationProvider(modelSelection?.provider)) {
-      return null;
-    }
-
-    if (modelSelection?.provider === "codex") {
-      return {
-        modelSelection,
-        ...(providerOptions ? { providerOptions } : {}),
-        ...(providerOptions?.codex?.homePath
-          ? { codexHomePath: providerOptions.codex.homePath }
-          : {}),
-      } as const;
-    }
-
-    return {
-      modelSelection,
-      ...(providerOptions ? { providerOptions } : {}),
-    } as const;
-  };
 
   const resolveThreadTextGenerationInput = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1013,8 +981,27 @@ const make = Effect.gen(function* () {
       shouldBootstrapPriorTranscriptContext && availableBootstrapChars > 0
         ? buildPriorTranscriptBootstrapText(thread, input.messageId, availableBootstrapChars)
         : null;
+    const sidechatSourceThread =
+      thread.sidechatSourceThreadId != null
+        ? yield* resolveThread(thread.sidechatSourceThreadId)
+        : null;
+    const sidechatBoundaryInstruction = thread.sidechatSourceThreadId
+      ? resolveSidechatBoundaryInstruction({
+          sidechat: {
+            envMode: thread.envMode ?? "local",
+            branch: thread.branch,
+            worktreePath: thread.worktreePath,
+          },
+          source: sidechatSourceThread
+            ? {
+                branch: sidechatSourceThread.branch,
+                worktreePath: sidechatSourceThread.worktreePath,
+              }
+            : null,
+        })
+      : SIDECHAT_READONLY_BOUNDARY_INSTRUCTION;
     const boundaryMessageText = thread.sidechatSourceThreadId
-      ? wrapSidechatInput(input.messageText)
+      ? wrapSidechatInput(input.messageText, sidechatBoundaryInstruction)
       : input.messageText;
     const workspaceContextPreamble = buildWorkspaceContextPreamble(
       yield* resolveProjectedThreadWorkspaceContexts(thread),
@@ -1549,7 +1536,6 @@ const make = Effect.gen(function* () {
         ? "queue"
         : event.payload.dispatchMode;
     const editResendKey = editResendTurnStartKey(event.payload.threadId, event.payload.messageId);
-    const isEditResendTurn = editResendTurnStartKeys.has(editResendKey);
 
     yield* dispatchTurnForThread({
       threadId: event.payload.threadId,
@@ -1683,12 +1669,11 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.approval-response-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
-    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
-    if (!thread || !providerThread) {
+    if (!thread) {
       return;
     }
-    const hasSession = providerThread.session && providerThread.session.status !== "stopped";
-    if (!hasSession) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    if (providerThread?.session?.status === "stopped") {
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.approval.respond.failed",
@@ -1699,10 +1684,11 @@ const make = Effect.gen(function* () {
         requestId: event.payload.requestId,
       });
     }
+    const providerThreadId = providerThread?.id ?? event.payload.threadId;
 
     yield* providerService
       .respondToRequest({
-        threadId: providerThread.id,
+        threadId: providerThreadId,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
       })
@@ -1714,7 +1700,7 @@ const make = Effect.gen(function* () {
               kind: "provider.approval.respond.failed",
               summary: "Provider approval response failed",
               detail: isUnknownPendingApprovalRequestError(cause)
-                ? stalePendingRequestDetail("approval", event.payload.requestId)
+                ? buildStalePendingRequestFailureDetail("approval", event.payload.requestId)
                 : Cause.pretty(cause),
               turnId: null,
               createdAt: event.payload.createdAt,
@@ -1731,12 +1717,11 @@ const make = Effect.gen(function* () {
     event: Extract<ProviderIntentEvent, { type: "thread.user-input-response-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
-    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
-    if (!thread || !providerThread) {
+    if (!thread) {
       return;
     }
-    const hasSession = providerThread.session && providerThread.session.status !== "stopped";
-    if (!hasSession) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    if (providerThread?.session?.status === "stopped") {
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.user-input.respond.failed",
@@ -1747,10 +1732,11 @@ const make = Effect.gen(function* () {
         requestId: event.payload.requestId,
       });
     }
+    const providerThreadId = providerThread?.id ?? event.payload.threadId;
 
     yield* providerService
       .respondToUserInput({
-        threadId: providerThread.id,
+        threadId: providerThreadId,
         requestId: event.payload.requestId,
         answers: event.payload.answers,
       })
@@ -1761,7 +1747,7 @@ const make = Effect.gen(function* () {
             kind: "provider.user-input.respond.failed",
             summary: "Provider user input response failed",
             detail: isUnknownPendingUserInputRequestError(cause)
-              ? stalePendingRequestDetail("user-input", event.payload.requestId)
+              ? buildStalePendingRequestFailureDetail("user-input", event.payload.requestId)
               : Cause.pretty(cause),
             turnId: null,
             createdAt: event.payload.createdAt,

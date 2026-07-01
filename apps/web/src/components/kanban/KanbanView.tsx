@@ -8,15 +8,10 @@ import type { ProjectId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { SidebarHeaderNavigationControls } from "~/components/SidebarHeaderNavigationControls";
 import { Button } from "~/components/ui/button";
 import { Kbd, KbdGroup } from "~/components/ui/kbd";
-import { SidebarInset } from "~/components/ui/sidebar";
+import { RouteInsetSurface } from "../RouteInsetSurface";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import {
-  useDesktopTopBarTrafficLightGutterClassName,
-  useDesktopTopBarWindowControlsGutterClassName,
-} from "~/hooks/useDesktopTopBarGutter";
 import { useNowMs } from "~/hooks/useNowMs";
 import { splitShortcutLabel } from "~/keybindings";
 import { ArrowLeftIcon, PlusIcon } from "~/lib/icons";
@@ -47,11 +42,7 @@ import {
   CHAT_SURFACE_HEADER_HEIGHT_CLASS,
   CHAT_SURFACE_HEADER_PADDING_X_CLASS,
 } from "../chat/chatHeaderControls";
-import {
-  CHAT_BACKGROUND_CLASS_NAME,
-  CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME,
-  CHAT_ROUTE_INSET_SHELL_CLASS_NAME,
-} from "../chat/composerPickerStyles";
+import { CHAT_BACKGROUND_CLASS_NAME } from "../chat/composerPickerStyles";
 import { KanbanNewTaskDialog } from "./KanbanNewTaskDialog";
 import { KanbanOverview } from "./KanbanOverview";
 import { KanbanProjectBoardView } from "./KanbanProjectBoardView";
@@ -63,9 +54,6 @@ export default function KanbanView({ projectId }: { projectId: string | null }) 
   const navigate = useNavigate();
   const board = useKanbanBoard();
   const threadsHydrated = useStore((state) => state.threadsHydrated);
-  const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
-  const desktopTopBarWindowControlsGutterClassName =
-    useDesktopTopBarWindowControlsGutterClassName();
 
   const projectBoard =
     projectId === null
@@ -165,10 +153,7 @@ export default function KanbanView({ projectId }: { projectId: string | null }) 
   }, [navigate]);
 
   return (
-    <SidebarInset
-      className={CHAT_ROUTE_INSET_SHELL_CLASS_NAME}
-      surfaceClassName={CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME}
-    >
+    <RouteInsetSurface>
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
@@ -179,14 +164,11 @@ export default function KanbanView({ projectId }: { projectId: string | null }) 
           className={cn(
             CHAT_SURFACE_HEADER_DIVIDER_CLASS_NAME,
             CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-            "drag-region",
-            desktopTopBarTrafficLightGutterClassName,
-            desktopTopBarWindowControlsGutterClassName,
+            "flex items-center [-webkit-app-region:no-drag]",
+            CHAT_SURFACE_HEADER_HEIGHT_CLASS,
           )}
         >
-          <div className={cn("flex items-center gap-2 sm:gap-3", CHAT_SURFACE_HEADER_HEIGHT_CLASS)}>
-            <SidebarHeaderNavigationControls />
-            <div className="flex min-w-0 flex-1 items-center gap-2 [-webkit-app-region:no-drag]">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
               {projectBoard ? (
                 <Button
                   size="icon-xs"
@@ -229,7 +211,6 @@ export default function KanbanView({ projectId }: { projectId: string | null }) 
                   </span>
                 </TooltipPopup>
               </Tooltip>
-            </div>
           </div>
         </header>
 
@@ -269,6 +250,6 @@ export default function KanbanView({ projectId }: { projectId: string | null }) 
         />
       ) : null}
       {renameDialog}
-    </SidebarInset>
+    </RouteInsetSurface>
   );
 }

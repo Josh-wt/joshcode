@@ -8,6 +8,7 @@
 import { type ComponentProps, memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { ComposerAutomationSetupBanner } from "./ComposerAutomationSetupBanner";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
@@ -28,8 +29,12 @@ interface ComposerInputBannersProps {
   pendingUserInputQuestionIndex: PendingUserInputPanelProps["questionIndex"];
   onToggleUserInputOption: PendingUserInputPanelProps["onToggleOption"];
   onAdvanceUserInput: PendingUserInputPanelProps["onAdvance"];
+  onCancelUserInput: PendingUserInputPanelProps["onCancel"];
   // `id` keys the banner so it remounts when the proposed plan changes.
   planFollowUp: { id: string; title: string | null } | null;
+  // Setup-mode control while gathering an automation's task/schedule (the exchange
+  // itself renders as bubbles in the transcript).
+  automationSetup: { onCancel: () => void } | null;
 }
 
 export const ComposerInputBanners = memo(function ComposerInputBanners({
@@ -42,7 +47,9 @@ export const ComposerInputBanners = memo(function ComposerInputBanners({
   pendingUserInputQuestionIndex,
   onToggleUserInputOption,
   onAdvanceUserInput,
+  onCancelUserInput,
   planFollowUp,
+  automationSetup,
 }: ComposerInputBannersProps) {
   let content: ReactNode = null;
   if (activeApproval) {
@@ -58,10 +65,13 @@ export const ComposerInputBanners = memo(function ComposerInputBanners({
         questionIndex={pendingUserInputQuestionIndex}
         onToggleOption={onToggleUserInputOption}
         onAdvance={onAdvanceUserInput}
+        onCancel={onCancelUserInput}
       />
     );
   } else if (planFollowUp) {
     content = <ComposerPlanFollowUpBanner key={planFollowUp.id} planTitle={planFollowUp.title} />;
+  } else if (automationSetup) {
+    content = <ComposerAutomationSetupBanner onCancel={automationSetup.onCancel} />;
   }
 
   if (!content) {

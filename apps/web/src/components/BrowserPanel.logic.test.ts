@@ -6,6 +6,7 @@ import {
   normalizeBrowserAddressInput,
   resolveBrowserChromeStatus,
   resolveBrowserAddressSync,
+  shouldDismissBrowserHostPanelOnTabClose,
 } from "./BrowserPanel.logic";
 
 describe("browserAddressDisplayValue", () => {
@@ -166,5 +167,28 @@ describe("resolveBrowserChromeStatus", () => {
       tone: "default",
       label: "Starting browser...",
     });
+  });
+});
+
+describe("shouldDismissBrowserHostPanelOnTabClose", () => {
+  it("dismisses the host panel when closing the last tab", () => {
+    expect(
+      shouldDismissBrowserHostPanelOnTabClose({
+        tabs: [{ id: "tab-1" }],
+        closingTabId: "tab-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the host panel open when other tabs remain", () => {
+    expect(
+      shouldDismissBrowserHostPanelOnTabClose({
+        tabs: [
+          { id: "tab-1" },
+          { id: "tab-2" },
+        ],
+        closingTabId: "tab-1",
+      }),
+    ).toBe(false);
   });
 });

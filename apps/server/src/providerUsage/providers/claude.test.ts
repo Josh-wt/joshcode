@@ -93,12 +93,12 @@ describe("claudeUsageFetcher", () => {
     expect(snapshot.status).toBe("ok");
     expect(snapshot.limits.find((limit) => limit.window === "5h")?.usedPercent).toBe(12);
     expect(snapshot.planName).toBe("Pro");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
 
     const saved = readSavedOauth(credentialsPath);
-    expect(saved.claudeAiOauth.accessToken).toBe("expired-access-token");
-    expect(saved.claudeAiOauth.refreshToken).toBe("old-refresh-token");
-    expect(saved.claudeAiOauth.expiresAt).toBe(originalExpiresAt);
+    expect(saved.claudeAiOauth.accessToken).toBe("fresh-access-token");
+    expect(saved.claudeAiOauth.refreshToken).toBe("new-refresh-token");
+    expect(saved.claudeAiOauth.expiresAt).toBeGreaterThan(NOW_MS);
   });
 
   it("refreshes and retries when the usage endpoint rejects a stale token", async () => {
@@ -138,7 +138,7 @@ describe("claudeUsageFetcher", () => {
 
     expect(snapshot.status).toBe("ok");
     expect(snapshot.limits.find((limit) => limit.window === "Weekly")?.usedPercent).toBe(45);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("falls through to the next credential source when the first token is rejected", async () => {
@@ -178,6 +178,6 @@ describe("claudeUsageFetcher", () => {
     expect(snapshot.status).toBe("ok");
     expect(snapshot.planName).toBe("Max (5x)");
     expect(snapshot.limits.find((limit) => limit.window === "5h")?.usedPercent).toBe(56);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

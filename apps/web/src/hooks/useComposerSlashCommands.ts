@@ -8,6 +8,7 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { QueryClient } from "@tanstack/react-query";
 import { buildPromptThreadTitleFallback } from "@t3tools/shared/chatThreads";
 import { deriveAssociatedWorktreeMetadata } from "@t3tools/shared/threadWorkspace";
 import { useCallback, useEffect, useState } from "react";
@@ -34,6 +35,11 @@ import { resolveForkThreadEnvironment } from "../lib/threadEnvironment";
 import { type SplitViewId } from "../splitViewStore";
 import { useRightDockStore } from "../rightDockStore";
 import { registerSidechatCreator } from "../lib/sidechatCreatorRegistry";
+import { invalidateGitQueriesForCwds } from "../lib/gitReactQuery";
+import {
+  buildInheritedSidechatWorkspace,
+  resolveSidechatWorkspaceSeed,
+} from "../lib/sidechatWorkspace";
 
 type ComposerSnapshot = {
   value: string;
@@ -51,6 +57,7 @@ export function useComposerSlashCommands(input: {
   activeProject: Project | undefined;
   activeThread: Thread | undefined;
   activeRootBranch: string | null;
+  isGitRepo: boolean;
   isServerThread: boolean;
   supportsFastSlashCommand: boolean;
   canOfferCompactCommand: boolean;
@@ -65,6 +72,7 @@ export function useComposerSlashCommands(input: {
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   threadId: ThreadId;
+  queryClient: QueryClient;
   syncServerShellSnapshot: (snapshot: OrchestrationShellSnapshot) => void;
   navigateToThread: (threadId: ThreadId, options?: { splitViewId?: SplitViewId }) => Promise<void>;
   handleClearConversation: () => Promise<void> | void;
@@ -99,6 +107,7 @@ export function useComposerSlashCommands(input: {
     activeProject,
     activeThread,
     activeRootBranch,
+    isGitRepo,
     isServerThread,
     supportsFastSlashCommand,
     canOfferCompactCommand,
@@ -113,6 +122,7 @@ export function useComposerSlashCommands(input: {
     runtimeMode,
     interactionMode,
     threadId,
+    queryClient,
     syncServerShellSnapshot,
     navigateToThread,
     handleClearConversation,
@@ -316,6 +326,24 @@ export function useComposerSlashCommands(input: {
           ? buildPromptThreadTitleFallback(initialPrompt)
           : activeThread.title;
 
+      const parentWorkspace = buildInheritedSidechatWorkspace({
+        envMode: activeThread.envMode,
+        branch: activeThread.branch,
+        worktreePath: activeThread.worktreePath,
+        associatedWorktreePath: activeThread.associatedWorktreePath,
+        associatedWorktreeBranch: activeThread.associatedWorktreeBranch,
+        associatedWorktreeRef: activeThread.associatedWorktreeRef,
+      });
+      const sidechatWorkspace = await resolveSidechatWorkspaceSeed({
+        projectCwd: activeProject.cwd,
+        isGitRepo,
+        baseBranch: activeThread.branch ?? activeRootBranch,
+        parentWorkspace,
+      });
+      if (sidechatWorkspace.worktreePath && sidechatWorkspace !== parentWorkspace) {
+        await invalidateGitQueriesForCwds(queryClient, [activeProject.cwd]);
+      }
+
       await api.orchestration.dispatchCommand({
         type: "thread.fork.create",
         commandId: newCommandId(),
@@ -327,14 +355,14 @@ export function useComposerSlashCommands(input: {
         modelSelection: selectedModelSelection,
         runtimeMode: "approval-required",
         interactionMode: "default",
-        envMode: activeThread.envMode ?? (activeThread.worktreePath ? "worktree" : "local"),
-        branch: activeThread.branch,
-        worktreePath: activeThread.worktreePath,
-        workspaceContexts: activeThread.workspaceContexts ?? [],
-        activeWorkspaceContextId: activeThread.activeWorkspaceContextId ?? null,
-        associatedWorktreePath: activeThread.associatedWorktreePath ?? null,
-        associatedWorktreeBranch: activeThread.associatedWorktreeBranch ?? null,
-        associatedWorktreeRef: activeThread.associatedWorktreeRef ?? null,
+        envMode: sidechatWorkspace.envMode,
+        branch: sidechatWorkspace.branch,
+        worktreePath: sidechatWorkspace.worktreePath,
+        workspaceContexts: sidechatWorkspace.workspaceContexts,
+        activeWorkspaceContextId: sidechatWorkspace.activeWorkspaceContextId,
+        associatedWorktreePath: sidechatWorkspace.associatedWorktreePath,
+        associatedWorktreeBranch: sidechatWorkspace.associatedWorktreeBranch,
+        associatedWorktreeRef: sidechatWorkspace.associatedWorktreeRef,
         importedMessages: [...importedMessages],
         createdAt,
       });
@@ -369,9 +397,12 @@ export function useComposerSlashCommands(input: {
     },
     [
       activeProject,
+      activeRootBranch,
       activeThread,
       canOfferSideCommand,
+      isGitRepo,
       isServerThread,
+      queryClient,
       selectedModelSelection,
       syncServerShellSnapshot,
     ],
@@ -738,6 +769,26 @@ export function useComposerSlashCommands(input: {
         );
         if (wasPromptReplacementApplied(applied)) {
           editorActions.setComposerHighlightedItemId(null);
+        }
+        return;
+      }
+
+      if (item.command === "automation") {
+        const replacement = "/automation ";
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = editorActions.applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (wasPromptReplacementApplied(applied)) {
+          editorActions.setComposerHighlightedItemId(null);
+          editorActions.scheduleComposerFocus();
         }
         return;
       }

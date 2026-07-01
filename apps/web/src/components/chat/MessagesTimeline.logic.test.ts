@@ -227,6 +227,51 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(second.result[0]).toBe(enrichedRows[0]);
   });
 
+  it("replaces work rows when automation card fields are added", () => {
+    const firstRows: MessagesTimelineRow[] = [
+      {
+        kind: "work",
+        id: "work-group-automation",
+        createdAt: "2026-05-09T10:00:00.000Z",
+        groupedEntries: [
+          {
+            id: "automation-created",
+            createdAt: "2026-05-09T10:00:00.000Z",
+            label: "Created automation",
+            tone: "info",
+          },
+        ],
+      },
+    ];
+    const first = computeStableMessagesTimelineRows(firstRows, emptyStableRows());
+
+    const enrichedRows: MessagesTimelineRow[] = [
+      {
+        kind: "work",
+        id: "work-group-automation",
+        createdAt: "2026-05-09T10:00:00.000Z",
+        groupedEntries: [
+          {
+            id: "automation-created",
+            createdAt: "2026-05-09T10:00:00.000Z",
+            label: "Created automation",
+            tone: "info",
+            automation: {
+              id: "automation-7",
+              name: "Watch Synara PR 231",
+              cadenceLabel: "Every 5m",
+            },
+          },
+        ],
+      },
+    ];
+
+    const second = computeStableMessagesTimelineRows(enrichedRows, first);
+
+    expect(second).not.toBe(first);
+    expect(second.result[0]).toBe(enrichedRows[0]);
+  });
+
   it("replaces assistant rows when inline tool metadata becomes richer", () => {
     const assistantMessage = {
       id: MessageId.makeUnsafe("assistant-1"),
@@ -666,6 +711,54 @@ describe("deriveMessagesTimelineRows", () => {
     const terminal = messageRow(rows, "a3");
     expect(terminal).toBeDefined();
     expect(terminal!.collapsedTurnItems).toBeUndefined();
+  });
+
+  it("keeps a just-settled tail assistant expanded when the active turn id is briefly unavailable", () => {
+    const rows = deriveMessagesTimelineRows({
+      ...baseInput,
+      isWorking: true,
+      activeTurnInProgress: true,
+      timelineEntries: [
+        userEntry("u1", "2026-01-01T00:00:00Z"),
+        workEntry("w1", "2026-01-01T00:00:01Z", "tool 1"),
+        assistantEntry("a1", "2026-01-01T00:00:02Z", {
+          turnId: "t1",
+          text: "All done",
+          completedAt: "2026-01-01T00:00:03Z",
+        }),
+      ],
+    });
+
+    const terminal = messageRow(rows, "a1");
+    expect(terminal).toBeDefined();
+    expect(terminal!.inlineWorkEntries?.map((entry) => entry.id)).toEqual(["w1"]);
+    expect(terminal!.collapsedTurnItems).toBeUndefined();
+  });
+
+  it("collapses an older settled turn when a follow-up user message is waiting for output", () => {
+    const rows = deriveMessagesTimelineRows({
+      ...baseInput,
+      isWorking: true,
+      activeTurnInProgress: true,
+      activeTurnStartedAt: "2026-01-01T00:00:05Z",
+      timelineEntries: [
+        userEntry("u1", "2026-01-01T00:00:00Z"),
+        workEntry("w1", "2026-01-01T00:00:01Z", "tool 1"),
+        assistantEntry("a1", "2026-01-01T00:00:02Z", {
+          turnId: "t1",
+          text: "All done",
+          completedAt: "2026-01-01T00:00:03Z",
+        }),
+        userEntry("u2", "2026-01-01T00:00:05Z"),
+      ],
+    });
+
+    const previousAssistant = messageRow(rows, "a1");
+    expect(previousAssistant).toBeDefined();
+    expect(collapsedSignature(previousAssistant!)).toEqual(["work:w1"]);
+    expect(previousAssistant!.inlineWorkEntries).toBeUndefined();
+    expect(messageRow(rows, "u2")).toBeDefined();
+    expect(rows.some((row) => row.kind === "work")).toBe(false);
   });
 
   it("collapses adjacent provider mini-turns into the same user-visible response", () => {

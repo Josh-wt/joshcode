@@ -57,11 +57,7 @@ import {
 import { cn } from "~/lib/utils";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "./ui/input-group";
 import { SidebarInset } from "./ui/sidebar";
-import { SidebarHeaderNavigationControls } from "./SidebarHeaderNavigationControls";
-import {
-  useDesktopTopBarTrafficLightGutterClassName,
-  useDesktopTopBarWindowControlsGutterClassName,
-} from "~/hooks/useDesktopTopBarGutter";
+import { useDesktopTopBarWindowControlsGutterClassName } from "~/hooks/useDesktopTopBarGutter";
 import { Skeleton } from "./ui/skeleton";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -372,7 +368,6 @@ function SectionHeader({ title }: { title: string }) {
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function PluginLibrary() {
-  const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
   const desktopTopBarWindowControlsGutterClassName =
     useDesktopTopBarWindowControlsGutterClassName();
   const firstProject = useStore(useMemo(() => createFirstProjectSelector(), []));
@@ -561,12 +556,10 @@ export function PluginLibrary() {
         {/* ── Top nav ───────────────────────────────────────────────────── */}
         <div
           className={cn(
-            "drag-region flex shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6",
-            desktopTopBarTrafficLightGutterClassName,
+            "flex shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6 [-webkit-app-region:no-drag]",
             desktopTopBarWindowControlsGutterClassName,
           )}
         >
-          <SidebarHeaderNavigationControls />
           <div className="flex items-end gap-3">
             <TabButton
               label="Plugins"

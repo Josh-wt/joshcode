@@ -5,10 +5,14 @@
  * keyboard navigation and shortcut labels behave like the rest of the app.
  */
 import {
+  ArchiveIcon,
+  AutomationIcon,
   CheckIcon,
   DeviceLaptopIcon,
+  GitForkIcon,
   MoonIcon,
   NewThreadIcon,
+  PluginIcon,
   SearchIcon,
   SettingsIcon,
   SunIcon,
@@ -80,6 +84,9 @@ interface SidebarSearchPaletteProps {
   actions: readonly SidebarSearchAction[];
   projects: readonly SidebarSearchProject[];
   threads: readonly SidebarSearchThread[];
+  browsePinnedThreads?: readonly SidebarSearchThread[];
+  browsePinnedProjects?: readonly SidebarSearchProject[];
+  browseHomeChatThreads?: readonly SidebarSearchThread[];
   onCreateChat: () => void;
   onCreateThread: () => void;
   onAddProjectPath: (path: string, options?: { createIfMissing?: boolean }) => Promise<void>;
@@ -91,6 +98,10 @@ interface SidebarSearchPaletteProps {
   onOpenThread: (threadId: string) => void;
   importProviders: readonly ImportProviderKind[];
   onImportThread: (provider: ImportProviderKind, externalId: string) => Promise<void>;
+  onNavigateAutomations?: () => void;
+  onNavigatePlugins?: () => void;
+  onNavigateArchivedThreads?: () => void;
+  onNavigateWorktrees?: () => void;
 }
 
 export type ImportProviderKind = Extract<
@@ -102,7 +113,14 @@ function actionHandler(
   actionId: string,
   props: Pick<
     SidebarSearchPaletteProps,
-    "onCreateChat" | "onCreateThread" | "onOpenSettings" | "onOpenUsageSettings"
+    | "onCreateChat"
+    | "onCreateThread"
+    | "onOpenSettings"
+    | "onOpenUsageSettings"
+    | "onNavigateAutomations"
+    | "onNavigatePlugins"
+    | "onNavigateArchivedThreads"
+    | "onNavigateWorktrees"
   >,
 ): (() => void) | null {
   switch (actionId) {
@@ -114,6 +132,17 @@ function actionHandler(
       return props.onOpenSettings;
     case "usage-settings":
       return props.onOpenUsageSettings;
+    case "automations":
+      return props.onNavigateAutomations ?? null;
+    case "plugins":
+      return props.onNavigatePlugins ?? null;
+    case "archived-threads":
+      return props.onNavigateArchivedThreads ?? null;
+    case "worktrees":
+      return props.onNavigateWorktrees ?? null;
+    case "sort-projects":
+    case "sort-threads":
+      return props.onOpenSettings;
     default:
       return null;
   }
@@ -126,6 +155,12 @@ const ACTION_ICONS: Record<string, IconComponent> = {
   "new-thread": NewThreadIcon,
   "add-project": FolderClosed,
   "import-thread": LuArrowDownToLine,
+  automations: AutomationIcon,
+  plugins: PluginIcon,
+  "archived-threads": ArchiveIcon,
+  worktrees: GitForkIcon,
+  "sort-projects": SettingsIcon,
+  "sort-threads": SettingsIcon,
   settings: SettingsIcon,
   "usage-settings": SettingsIcon,
 };
@@ -369,8 +404,12 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
       setIsImporting(false);
       setAddProjectError(null);
       setIsAddingProject(false);
+      return;
     }
-  }, [props.importProviders, props.open]);
+    if (props.initialBrowseQuery) {
+      setQuery(props.initialBrowseQuery);
+    }
+  }, [props.importProviders, props.initialBrowseQuery, props.open]);
 
   useEffect(() => {
     if (props.importProviders.includes(importProvider)) {
@@ -471,12 +510,22 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     () => (isBrowsing ? [] : matchSidebarSearchThreads(props.threads, query)),
     [isBrowsing, props.threads, query],
   );
+  const browsePinnedThreads = props.browsePinnedThreads ?? [];
+  const browsePinnedProjects = props.browsePinnedProjects ?? [];
+  const browseHomeChatThreads = props.browseHomeChatThreads ?? [];
+  const showBrowseSections =
+    !isBrowsing && trimmedQuery.length === 0 && query.trim().length === 0;
+  const hasBrowseSections =
+    browsePinnedThreads.length > 0 ||
+    browsePinnedProjects.length > 0 ||
+    browseHomeChatThreads.length > 0;
   const hasSearchResults =
     matchedActions.length > 0 ||
     themeCommandItems.length > 0 ||
     matchedCurrentThemes.length > 0 ||
     matchedProjects.length > 0 ||
-    matchedThreads.length > 0;
+    matchedThreads.length > 0 ||
+    (showBrowseSections && hasBrowseSections);
   const importFieldLabel = importProvider === "codex" ? "Thread ID" : "Session ID";
   const importPlaceholder =
     importProvider === "claudeAgent"
@@ -839,6 +888,89 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                         ) : null}
                       </>
                     )
+                  ) : null}
+
+                  {showBrowseSections && browsePinnedThreads.length > 0 ? (
+                    <CommandGroup>
+                      <CommandGroupLabel className="pt-0 pb-1.5 pl-3">Pinned threads</CommandGroupLabel>
+                      {browsePinnedThreads.map((thread) => (
+                        <CommandItem
+                          key={`pinned-thread:${thread.id}`}
+                          value={`pinned-thread:${thread.id}`}
+                          className="cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onClick={() => {
+                            props.onOpenChange(false);
+                            props.onOpenThread(thread.id);
+                          }}
+                        >
+                          {isGenericChatThreadTitle(thread.title) ? null : (
+                            <ProviderIcon provider={thread.provider} />
+                          )}
+                          <div className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-foreground">
+                            {thread.title || "Untitled thread"}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  ) : null}
+
+                  {showBrowseSections && browsePinnedProjects.length > 0 ? (
+                    <CommandGroup>
+                      <CommandGroupLabel className="py-1.5 pl-3">Pinned projects</CommandGroupLabel>
+                      {browsePinnedProjects.map((project) => (
+                        <CommandItem
+                          key={`pinned-project:${project.id}`}
+                          value={`pinned-project:${project.id}`}
+                          className="cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onClick={() => {
+                            props.onOpenChange(false);
+                            props.onOpenProject(project.id);
+                          }}
+                        >
+                          <PaletteIcon icon={HiOutlineFolderOpen} />
+                          <div className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-foreground">
+                            {project.name || "Untitled project"}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  ) : null}
+
+                  {showBrowseSections && browseHomeChatThreads.length > 0 ? (
+                    <CommandGroup>
+                      <CommandGroupLabel className="py-1.5 pl-3">Home chats</CommandGroupLabel>
+                      {browseHomeChatThreads.map((thread) => (
+                        <CommandItem
+                          key={`home-chat:${thread.id}`}
+                          value={`home-chat:${thread.id}`}
+                          className="cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onClick={() => {
+                            props.onOpenChange(false);
+                            props.onOpenThread(thread.id);
+                          }}
+                        >
+                          <PaletteIcon icon={BsChat} />
+                          <div className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-foreground">
+                            {thread.title || "Untitled chat"}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  ) : null}
+
+                  {showBrowseSections &&
+                  hasBrowseSections &&
+                  matchedActions.length > 0 ? (
+                    <CommandSeparator />
                   ) : null}
 
                   {!isBrowsing && matchedActions.length > 0 ? (

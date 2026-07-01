@@ -24,6 +24,10 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./windowsProcess": {
+      "types": "./src/windowsProcess.ts",
+      "import": "./src/windowsProcess.ts"
+    },
     "./codexConfig": {
       "types": "./src/codexConfig.ts",
       "import": "./src/codexConfig.ts"
@@ -96,6 +100,10 @@
       "types": "./src/threadWorkspace.ts",
       "import": "./src/threadWorkspace.ts"
     },
+    "./sidechatWorkspace": {
+      "types": "./src/sidechatWorkspace.ts",
+      "import": "./src/sidechatWorkspace.ts"
+    },
     "./subagents": {
       "types": "./src/subagents.ts",
       "import": "./src/subagents.ts"
@@ -120,9 +128,13 @@
       "types": "./src/toolOutputSummary.ts",
       "import": "./src/toolOutputSummary.ts"
     },
-    "./localImage": {
-      "types": "./src/localImage.ts",
-      "import": "./src/localImage.ts"
+    "./localPreviewFiles": {
+      "types": "./src/localPreviewFiles.ts",
+      "import": "./src/localPreviewFiles.ts"
+    },
+    "./composerSlashCommands": {
+      "types": "./src/composerSlashCommands.ts",
+      "import": "./src/composerSlashCommands.ts"
     },
     "./openRouterApiKey": {
       "types": "./src/openRouterApiKey.ts",
@@ -139,6 +151,10 @@
     "./providerUsage": {
       "types": "./src/providerUsage.ts",
       "import": "./src/providerUsage.ts"
+    },
+    "./formatBytes": {
+      "types": "./src/formatBytes.ts",
+      "import": "./src/formatBytes.ts"
     }
   },
   "scripts": {

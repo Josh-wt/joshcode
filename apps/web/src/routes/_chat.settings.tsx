@@ -59,7 +59,6 @@ import {
   useAppSettings,
 } from "../appSettings";
 import { APP_VERSION } from "../branding";
-import { useDesktopTopBarTrafficLightGutterClassName } from "../hooks/useDesktopTopBarGutter";
 import { ProviderOptionLabel } from "../components/ProviderIcon";
 import {
   Autocomplete,
@@ -89,18 +88,13 @@ import {
   SettingsSelectPopup,
 } from "../components/settings/SettingsPanelPrimitives";
 import { ProviderUsageSettingsPanel } from "../components/settings/ProviderUsageSettingsPanel";
+import { ProfileSettingsPanel } from "../components/settings/ProfileSettingsPanel";
 import { SkillsSettingsPanel } from "../components/settings/SkillsSettingsPanel";
 import {
   CHAT_CONTENT_CARD_CLASS_NAME,
   CHAT_MAIN_VIEWPORT_SHELL_CLASS_NAME,
-  CHAT_ROUTE_INSET_SHELL_CLASS_NAME,
 } from "../components/chat/composerPickerStyles";
-import {
-  CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-  CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-} from "../components/chat/chatHeaderControls";
-import { SidebarHeaderNavigationControls } from "../components/SidebarHeaderNavigationControls";
-import { SidebarInset } from "../components/ui/sidebar";
+import { RouteInsetSurface } from "../components/RouteInsetSurface";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
@@ -629,7 +623,6 @@ function SettingsRouteView() {
 
   const { isDefaultActiveTheme, resetAllThemes, resolvedTheme, theme, setTheme } = useTheme();
   const { settings, defaults, updateSettings, resetSettings } = useAppSettings();
-  const desktopTopBarTrafficLightGutterClassName = useDesktopTopBarTrafficLightGutterClassName();
   const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
@@ -961,9 +954,6 @@ function SettingsRouteView() {
       ? ["Assistant output"]
       : []),
     ...(settings.diffWordWrap !== defaults.diffWordWrap ? ["Diff line wrapping"] : []),
-    ...(settings.enableComposerSuggestions !== defaults.enableComposerSuggestions
-      ? ["Prompt suggestions"]
-      : []),
     ...(settings.confirmThreadDelete !== defaults.confirmThreadDelete
       ? ["Delete confirmation"]
       : []),
@@ -1342,7 +1332,6 @@ function SettingsRouteView() {
           api: api.orchestration,
           threadIds: linkedArchivedThreadIds,
           removeDeletedThreadFromClientState,
-          syncServerShellSnapshot,
         });
 
         await removeWorktreeMutation.mutateAsync({
@@ -1369,12 +1358,7 @@ function SettingsRouteView() {
         });
       }
     },
-    [
-      queryClient,
-      removeDeletedThreadFromClientState,
-      removeWorktreeMutation,
-      syncServerShellSnapshot,
-    ],
+    [queryClient, removeDeletedThreadFromClientState, removeWorktreeMutation],
   );
 
   const unarchiveThread = useCallback(async (threadId: ThreadId) => {
@@ -1415,7 +1399,6 @@ function SettingsRouteView() {
           api: api.orchestration,
           threadId,
           removeDeletedThreadFromClientState,
-          syncServerShellSnapshot,
         });
         toastManager.add({
           type: "success",
@@ -1430,7 +1413,7 @@ function SettingsRouteView() {
         });
       }
     },
-    [removeDeletedThreadFromClientState, syncServerShellSnapshot],
+    [removeDeletedThreadFromClientState],
   );
 
   const handleArchivedThreadContextMenu = useCallback(
@@ -1730,6 +1713,14 @@ function SettingsRouteView() {
               "Show highlighted and underlined transcript text in the Environment panel.",
             resetLabel: "text markers section",
             ariaLabel: "Show the Text markers section in the Environment panel",
+          })}
+
+          {renderBooleanSettingRow({
+            settingKey: "showEnvironmentInstructions",
+            title: "Project instructions",
+            description: "Show project-level instructions in the Environment panel.",
+            resetLabel: "project instructions section",
+            ariaLabel: "Show the Project instructions section in the Environment panel",
           })}
 
           {renderBooleanSettingRow({
@@ -2088,14 +2079,6 @@ function SettingsRouteView() {
             "Set the default wrap state when the diff panel opens. The in-panel wrap toggle only affects the current diff session.",
           resetLabel: "diff line wrapping",
           ariaLabel: "Wrap diff lines by default",
-        })}
-
-        {renderBooleanSettingRow({
-          settingKey: "enableComposerSuggestions",
-          title: "Prompt suggestions",
-          description: "Show suggested prompts under the composer when starting a new thread.",
-          resetLabel: "prompt suggestions",
-          ariaLabel: "Show composer prompt suggestions",
         })}
       </SettingsSection>
 
@@ -3259,6 +3242,8 @@ function SettingsRouteView() {
         return renderModelsPanel();
       case "providers":
         return renderProvidersPanel();
+      case "profile":
+        return <ProfileSettingsPanel />;
       case "skills":
         return <SkillsSettingsPanel />;
       case "usage":
@@ -3278,58 +3263,40 @@ function SettingsRouteView() {
         CHAT_CONTENT_CARD_CLASS_NAME,
       )}
     >
-      <SidebarInset
-        className={CHAT_ROUTE_INSET_SHELL_CLASS_NAME}
-        surfaceClassName={SETTINGS_PAGE_BACKGROUND_CLASS_NAME}
-      >
-        {/* Companion sidebar trigger so settings is reachable-and-exitable even when the
-          sidebar is collapsed (web/mobile have no global Back arrow). Pinned to the
-          card's top-left — at the same header height + traffic-light gutter as the
-          chat/workspace headers — so the collapsed-state toggle sits by the traffic
-          lights instead of floating in the centered settings body. It renders nothing
-          while the sidebar is open (SidebarHeaderNavigationControls returns null), so it
-          adds no navigation chrome in the common (open) state and never shifts the centered
-          content (hence absolute, not a layout-occupying header row). The strip stays a
-          drag-region so the Windows frameless window can be moved by its top edge; the
-          caption buttons themselves are a separate fixed cluster (see root route). */}
-        <div
-          className={cn(
-            "drag-region absolute inset-x-0 top-0 z-10 flex items-center",
-            CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-            CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-            desktopTopBarTrafficLightGutterClassName,
-          )}
-        >
-          <div className="pointer-events-auto">
-            <SidebarHeaderNavigationControls />
-          </div>
-        </div>
+      <RouteInsetSurface surfaceClassName={SETTINGS_PAGE_BACKGROUND_CLASS_NAME}>
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-2xl px-6 py-8">
-              <div className="mb-8 flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <h1 className="text-xl font-medium tracking-tight text-foreground">
-                    {activeSectionItem.label}
-                  </h1>
-                  <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                    {activeSectionItem.description}
-                  </p>
+            {activeSection === "profile" ? (
+              // Profile is a self-contained dashboard: it owns its own header (avatar,
+              // name, share) so it skips the section title bar, and gets a slightly wider
+              // pane than the form sections to fit the heatmap + two-column layout.
+              <div className="mx-auto w-full max-w-3xl px-6 py-8">{renderActivePanel()}</div>
+            ) : (
+              <div className="mx-auto w-full max-w-2xl px-6 py-8">
+                <div className="mb-8 flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h1 className="text-xl font-medium tracking-tight text-foreground">
+                      {activeSectionItem.label}
+                    </h1>
+                    <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                      {activeSectionItem.description}
+                    </p>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={changedSettingLabels.length === 0}
+                    onClick={() => void restoreDefaults()}
+                  >
+                    <RotateCcwIcon className="size-3.5" />
+                    Restore defaults
+                  </Button>
                 </div>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  className="shrink-0"
-                  disabled={changedSettingLabels.length === 0}
-                  onClick={() => void restoreDefaults()}
-                >
-                  <RotateCcwIcon className="size-3.5" />
-                  Restore defaults
-                </Button>
-              </div>
 
-              {renderActivePanel()}
-            </div>
+                {renderActivePanel()}
+              </div>
+            )}
           </div>
         </div>
         {/* Mounted at the route level (outside the scrollable panel) so the
@@ -3340,7 +3307,7 @@ function SettingsRouteView() {
           onOpenChange={setReleaseHistoryOpen}
           defaultExpandedVersion={APP_VERSION}
         />
-      </SidebarInset>
+      </RouteInsetSurface>
     </div>
   );
 }

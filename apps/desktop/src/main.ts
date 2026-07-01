@@ -35,7 +35,7 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateState,
 } from "@t3tools/contracts";
-import { autoUpdater, CancellationToken } from "electron-updater";
+import { autoUpdater, BaseUpdater, CancellationToken } from "electron-updater";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { getMacTrafficLightPosition } from "@t3tools/shared/desktopChrome";
@@ -51,6 +51,7 @@ import {
   installResumableUpdateDownloader,
   type ResumableDownloaderTarget,
 } from "./resumableUpdateDownload";
+import { hardenElectronUpdater } from "./electronUpdaterSecurity";
 import { ServerListeningDetector } from "./serverListeningDetector";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import {
@@ -1702,6 +1703,7 @@ function configureAutoUpdater(): void {
     return;
   }
   updaterConfigured = true;
+  hardenElectronUpdater({ BaseUpdater }, autoUpdater);
   configuredGitHubUpdateSource = resolveGitHubUpdateSource(appUpdateYml);
   if (configuredGitHubUpdateSource !== null) {
     // The updater itself uses app-update.yml; this URL is only the human fallback.
@@ -2426,7 +2428,9 @@ function getWindowMaterialOptions(): BrowserWindowConstructorOptions {
 // uses a fully frameless shell and renderer-owned minimize/maximize/close controls,
 // so the toolbar can occupy the top edge instead of sitting below a native title bar.
 function getTitleBarOptions(): BrowserWindowConstructorOptions {
-  if (process.platform === "win32") {
+  // Windows and Linux use a frameless shell with renderer-owned window controls so
+  // the unified top bar can occupy the full window top edge (no native "Synara" title bar).
+  if (process.platform === "win32" || process.platform === "linux") {
     return { frame: false };
   }
   if (process.platform !== "darwin") {
@@ -2467,6 +2471,19 @@ function createWindow(): BrowserWindow {
   attachDesktopZoomFactorSync(window);
 
   window.webContents.on("context-menu", (event, params) => {
+    const hasNativeEditMenu =
+      params.misspelledWord ||
+      params.mediaType === "image" ||
+      params.editFlags.canCopy ||
+      params.editFlags.canCut ||
+      params.editFlags.canPaste ||
+      params.editFlags.canSelectAll ||
+      (params.selectionText?.trim().length ?? 0) > 0;
+    if (!hasNativeEditMenu) {
+      // xterm and other canvas surfaces show their own copy/paste menu in the renderer.
+      return;
+    }
+
     event.preventDefault();
 
     const menuTemplate: MenuItemConstructorOptions[] = [];

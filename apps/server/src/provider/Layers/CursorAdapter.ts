@@ -22,6 +22,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { prepareWindowsSafeProcess } from "@t3tools/shared/windowsProcess";
 import {
   DateTime,
   Deferred,
@@ -43,6 +44,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
+import { appendFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { filterProviderPromptImageAttachments } from "../promptAttachments.ts";
 import {
   ProviderAdapterProcessError,
@@ -74,6 +76,10 @@ import {
 } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggers } from "../acp/AcpNativeLogging.ts";
 import {
+  forkAcpTurnIdleWatchdog,
+  resolveAcpTurnIdleTimeoutMs,
+} from "../acp/AcpTurnIdleWatchdog.ts";
+import {
   applyCursorAcpModelSelection,
   fetchCursorAcpModelDescriptors,
   makeCursorAcpRuntime,
@@ -98,6 +104,14 @@ import { discoverCursorSkills } from "../cursorSkillsDiscovery.ts";
 const PROVIDER = "cursor" as const;
 const CURSOR_RESUME_VERSION = 1 as const;
 const CURSOR_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+// Backstop for an alive-but-silent cursor-agent child: if a turn produces no
+// ACP activity for this long, force-fail it instead of showing "Working"
+// forever. Generous by design; override with SYNARA_CURSOR_TURN_IDLE_TIMEOUT_MS.
+const CURSOR_TURN_IDLE_TIMEOUT_MS = resolveAcpTurnIdleTimeoutMs({
+  envVar: "SYNARA_CURSOR_TURN_IDLE_TIMEOUT_MS",
+  defaultMs: 600_000,
+});
+const CURSOR_TURN_WATCHDOG_INTERVAL_MS = 15_000;
 const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
@@ -162,6 +176,9 @@ interface CursorSessionContext {
   activeTurnId: TurnId | undefined;
   activeTurnFailedToolDetail: string | undefined;
   activePromptFiber: Fiber.Fiber<void, never> | undefined;
+  // Epoch-ms of the last inbound ACP activity for the active turn; drives the
+  // idle-progress watchdog that force-fails a silently hung turn.
+  lastTurnActivityAt: number | undefined;
   latestSessionCostUsd: number | undefined;
   stopped: boolean;
 }
@@ -518,6 +535,51 @@ export function makeCursorAdapter(
         yield* Effect.ignore(ctx.acp.cancel);
         if (activePromptFiber) {
           yield* Fiber.interrupt(activePromptFiber);
+        }
+      });
+
+    // Idle-progress watchdog escape hatch: force-fail a turn whose cursor-agent
+    // child is alive but has gone completely silent. Stays idempotent via
+    // clearCursorActiveTurn, so it is a no-op if the turn settled normally first.
+    const failCursorTurnAsTimedOut = (ctx: CursorSessionContext, turnId: TurnId, idleMs: number) =>
+      Effect.gen(function* () {
+        const promptFiber = ctx.activePromptFiber;
+        if (!clearCursorActiveTurn(ctx, turnId)) {
+          return;
+        }
+        const completedCost = finalizeCursorActiveTurnCost(ctx);
+        const idleSeconds = Math.round(idleMs / 1000);
+        const detail = `Cursor stopped responding (no activity for ${idleSeconds}s); the turn was timed out.`;
+        ctx.turns.push({ id: turnId, items: [{ prompt: turnId, timedOut: true, idleMs }] });
+        ctx.session = {
+          ...ctx.session,
+          status: "error",
+          updatedAt: yield* nowIso,
+          lastError: detail,
+        };
+        yield* Effect.logWarning("cursor.acp.turn_idle_timeout", {
+          threadId: ctx.threadId,
+          turnId,
+          idleMs,
+        });
+        yield* offerRuntimeEvent({
+          type: "turn.completed",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          turnId,
+          payload: {
+            state: "failed",
+            stopReason: null,
+            errorMessage: detail,
+            ...completedCost,
+          },
+        });
+        // Best-effort: tell the child to abandon the turn, then unwind the
+        // pending prompt fiber (its onInterrupt no-ops, the turn is cleared).
+        yield* Effect.ignore(ctx.acp.cancel);
+        if (promptFiber) {
+          yield* Fiber.interrupt(promptFiber);
         }
       });
 
@@ -894,6 +956,7 @@ export function makeCursorAdapter(
             activeTurnId: undefined,
             activeTurnFailedToolDetail: undefined,
             activePromptFiber: undefined,
+            lastTurnActivityAt: undefined,
             latestSessionCostUsd: undefined,
             stopped: false,
           };
@@ -901,6 +964,9 @@ export function makeCursorAdapter(
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
+                // Any inbound ACP event proves the child is alive and making
+                // progress; reset the idle-progress watchdog clock.
+                ctx.lastTurnActivityAt = Date.now();
                 switch (event._tag) {
                   case "ModeChanged":
                     return;
@@ -1068,15 +1134,23 @@ export function makeCursorAdapter(
             mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
         });
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
+        const promptText = appendFileAttachmentsPromptBlock({
+          text: input.input?.trim()
+            ? withCursorPlanModePrompt({
+                text: input.input.trim(),
+                ...(input.interactionMode !== undefined
+                  ? { interactionMode: input.interactionMode }
+                  : {}),
+              })
+            : undefined,
+          attachments: input.attachments,
+          attachmentsDir: serverConfig.attachmentsDir,
+          include: "all-files",
+        });
+        if (promptText) {
           promptParts.push({
             type: "text",
-            text: withCursorPlanModePrompt({
-              text: input.input.trim(),
-              ...(input.interactionMode !== undefined
-                ? { interactionMode: input.interactionMode }
-                : {}),
-            }),
+            text: promptText,
           });
         }
         if (input.attachments && input.attachments.length > 0) {
@@ -1124,6 +1198,7 @@ export function makeCursorAdapter(
         ctx.activeInteractionMode = input.interactionMode;
         ctx.lastPlanFingerprint = undefined;
         ctx.completedPlanFingerprint = undefined;
+        ctx.lastTurnActivityAt = Date.now();
         const { lastError: _lastError, ...sessionWithoutLastError } = ctx.session;
         ctx.session = {
           ...sessionWithoutLastError,
@@ -1244,6 +1319,22 @@ export function makeCursorAdapter(
           Effect.forkIn(ctx.scope),
         );
         ctx.activePromptFiber = yield* runPrompt;
+
+        // Backstop the forked prompt: if the child goes silent, fail the turn
+        // instead of leaving it "Working" forever. Self-terminates when the
+        // turn settles; pauses while a human approval is pending.
+        yield* forkAcpTurnIdleWatchdog({
+          idleTimeoutMs: CURSOR_TURN_IDLE_TIMEOUT_MS,
+          checkIntervalMs: CURSOR_TURN_WATCHDOG_INTERVAL_MS,
+          scope: ctx.scope,
+          isTurnActive: () => ctx.activeTurnId === turnId && !ctx.stopped,
+          isAwaitingHuman: () => ctx.pendingApprovals.size > 0 || ctx.pendingUserInputs.size > 0,
+          lastActivityAt: () => ctx.lastTurnActivityAt ?? Date.now(),
+          touchActivity: () => {
+            ctx.lastTurnActivityAt = Date.now();
+          },
+          onIdleTimeout: (idleMs) => failCursorTurnAsTimedOut(ctx, turnId, idleMs),
+        });
 
         return {
           threadId: input.threadId,
@@ -1388,15 +1479,18 @@ export function makeCursorAdapter(
       );
       const effectiveApiEndpoint = apiEndpoint || cursorSettings.apiEndpoint;
       const runCursorModelListCommand = Effect.gen(function* () {
+        const args = [
+          ...(effectiveApiEndpoint ? (["-e", effectiveApiEndpoint] as const) : []),
+          "models",
+        ];
+        const prepared = prepareWindowsSafeProcess(effectiveBinaryPath, args, {
+          env: process.env,
+        });
         const child = yield* childProcessSpawner.spawn(
-          ChildProcess.make(
-            effectiveBinaryPath,
-            [...(effectiveApiEndpoint ? (["-e", effectiveApiEndpoint] as const) : []), "models"],
-            {
-              shell: process.platform === "win32",
-              env: process.env,
-            },
-          ),
+          ChildProcess.make(prepared.command, prepared.args, {
+            shell: prepared.shell,
+            env: process.env,
+          }),
         );
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [

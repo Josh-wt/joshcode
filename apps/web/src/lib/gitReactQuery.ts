@@ -120,7 +120,7 @@ export function gitBranchesQueryOptions(cwd: string | null) {
     queryFn: async () => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git branches are unavailable.");
-      return api.git.listBranches({ cwd });
+      return api.git.listBranches({ cwd, refreshRemotes: true });
     },
     enabled: cwd !== null,
     staleTime: GIT_BRANCHES_STALE_TIME_MS,

@@ -9,9 +9,11 @@
 // Layer: Environment panel container
 
 import type {
+  AutomationDefinition,
   EditorId,
   MessageId,
   PinnedMessage,
+  ProjectId,
   ProviderKind,
   ResolvedKeybindingsConfig,
   ThreadId,
@@ -35,12 +37,21 @@ import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/i
 import { cn } from "~/lib/utils";
 
 import { EnvironmentEditorSection } from "./EnvironmentEditorSection";
+import {
+  EnvironmentAutomationsSection,
+  type EnvironmentAutomationPanelItem,
+} from "./EnvironmentAutomationsSection";
 import { EnvironmentUsageSection } from "./EnvironmentUsageSection";
 import { EnvironmentLocalServersSection } from "./EnvironmentLocalServersSection";
 import { EnvironmentMarkersSection } from "./EnvironmentMarkersSection";
 import { EnvironmentNotesSection } from "./EnvironmentNotesSection";
 import { EnvironmentPinnedSection } from "./EnvironmentPinnedSection";
+import { EnvironmentProjectInstructionsSection } from "./EnvironmentProjectInstructionsSection";
 import { ENVIRONMENT_PANEL_RECAP_MARKDOWN_CLASS_NAME } from "./environmentPanelStyles";
+import {
+  APP_TOP_BAR_ISLAND_OVERHANG_PX,
+  THREAD_TAB_BAR_HEIGHT_PX,
+} from "~/components/thread-tabs/threadTabBar.logic";
 import {
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
   EnvironmentCollapsibleSection,
@@ -50,14 +61,15 @@ import {
   EnvironmentSectionDivider,
 } from "./EnvironmentRow";
 
-// Horizontal space (px) the docked card reserves on the right edge of the chat area.
-// Mirrors the card footprint — w-72 (288px) plus the p-3 wrapper gutters — so insetting
-// the chat content by this amount clears the overlay while leaving the transcript's
-// scrollbar pinned to the viewport's far right.
+// Mirrors the card footprint — w-72 (288px) plus the wrapper gutters — when docked inset was used.
 export const ENVIRONMENT_DOCKED_CONTENT_INSET_PX = 312;
 
+/** Clearance below the top chrome row before the environment card starts. */
+export const ENVIRONMENT_PANEL_TOP_OFFSET_PX =
+  THREAD_TAB_BAR_HEIGHT_PX + APP_TOP_BAR_ISLAND_OVERHANG_PX + 4;
+
 const ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME =
-  "pointer-events-none absolute inset-y-0 right-0 z-20 flex flex-col p-3";
+  "pointer-events-none absolute right-0 bottom-0 z-20 flex flex-col pb-3 pr-2";
 
 export interface EnvironmentPanelProps {
   /** Drives the slide-in/out transition; the panel stays mounted so CSS can interpolate. */
@@ -70,7 +82,7 @@ export interface EnvironmentPanelProps {
    */
   variant: "docked" | "floating";
   gitCwd: string | null;
-  openInCwd: string | null;
+  openInTarget: string | null;
   githubRepository?: {
     readonly nameWithOwner: string;
     readonly url: string;
@@ -85,6 +97,8 @@ export interface EnvironmentPanelProps {
   showGitActions: boolean;
   /** Current diff-panel open state, so the "Changes" row reflects/toggles it. */
   diffOpen: boolean;
+  /** Heartbeat automations whose target is the active thread. */
+  threadAutomations: readonly EnvironmentAutomationPanelItem[];
   /** Non-null when the diff panel cannot be opened (e.g. no repo / no changes yet). */
   diffDisabledReason?: string | null;
   /** Shared diff totals from ChatView so the mounted panel does not duplicate patch parsing. */
@@ -107,8 +121,20 @@ export interface EnvironmentPanelProps {
   markerMessageTextById: ReadonlyMap<MessageId, string>;
   /** Per-thread freeform scratchpad notes (server-synced). */
   notes: string;
+  /** Active project whose local instructions should be edited. */
+  activeProjectId: ProjectId | null;
+  /** Per-project freeform instructions, persisted locally and optionally copied into notes. */
+  projectInstructions: string;
+  /** Whether the current thread is server-backed enough to accept notepad updates. */
+  canCopyProjectInstructionsToNotes: boolean;
+  /** Persist local project instruction edits. */
+  onProjectInstructionsChange: (projectId: ProjectId, instructions: string) => void;
+  /** Copy/append current project instructions into the active thread's notepad. */
+  onCopyProjectInstructionsToNotes: () => void;
   /** Toggle the Diff panel/route (same handler the header diff toggle used). */
   onToggleDiff: () => void;
+  /** Open the shared automation editor for a thread-bound automation row. */
+  onOpenAutomation: (definition: AutomationDefinition) => void;
   /** Open the repository URL in the in-app browser panel. */
   onOpenGithubRepository?: (url: string) => void;
   /** Scroll the transcript to a pinned message. */
@@ -169,7 +195,7 @@ export function EnvironmentPanel({
   open,
   variant,
   gitCwd,
-  openInCwd,
+  openInTarget,
   githubRepository = null,
   isGitRepo,
   keybindings,
@@ -178,6 +204,7 @@ export function EnvironmentPanel({
   activeProvider,
   showGitActions,
   diffOpen,
+  threadAutomations,
   diffDisabledReason = null,
   diffTotals,
   branchToolbar,
@@ -187,7 +214,13 @@ export function EnvironmentPanel({
   pinnedMessageTextById,
   markerMessageTextById,
   notes,
+  activeProjectId,
+  projectInstructions,
+  canCopyProjectInstructionsToNotes,
+  onProjectInstructionsChange,
+  onCopyProjectInstructionsToNotes,
   onToggleDiff,
+  onOpenAutomation,
   onOpenGithubRepository,
   onJumpToPinnedMessage,
   onTogglePinnedMessageDone,
@@ -209,10 +242,23 @@ export function EnvironmentPanel({
   // (so an open diff stays toggleable closed even when there are no pending changes).
   const changesDisabled = diffDisabledReason !== null && !diffOpen;
   const showRecap = Boolean(recap?.text) || recap?.status === "pending";
-  const markdownCwd = openInCwd ?? gitCwd ?? undefined;
+  const markdownCwd = openInTarget ?? gitCwd ?? undefined;
 
   const content = (
     <div className="flex flex-col gap-0.5 p-1.5">
+      {threadAutomations.length > 0 ? (
+        <>
+          <EnvironmentAutomationsSection
+            automations={threadAutomations}
+            onOpenAutomation={(definition) => {
+              onOpenAutomation(definition);
+              onClose();
+            }}
+          />
+          <EnvironmentSectionDivider />
+        </>
+      ) : null}
+
       <div className="flex items-center justify-between gap-2 px-2 pb-0.5 pt-0.5">
         <EnvironmentPanelTitle>Environment</EnvironmentPanelTitle>
         <IconButton
@@ -282,7 +328,7 @@ export function EnvironmentPanel({
         <EnvironmentEditorSection
           keybindings={keybindings}
           availableEditors={availableEditors}
-          openInCwd={openInCwd}
+          openInTarget={openInTarget}
           {...(onOpenEditorView
             ? {
                 onOpenEditorView: () => {
@@ -329,6 +375,21 @@ export function EnvironmentPanel({
         </>
       ) : null}
 
+      {settings.showEnvironmentInstructions && activeProjectId ? (
+        <>
+          <EnvironmentSectionDivider />
+          <EnvironmentProjectInstructionsSection
+            key={activeProjectId}
+            projectId={activeProjectId}
+            instructions={projectInstructions}
+            threadNotes={notes}
+            canCopyToThreadNotes={canCopyProjectInstructionsToNotes}
+            onInstructionsChange={onProjectInstructionsChange}
+            onCopyToThreadNotes={onCopyProjectInstructionsToNotes}
+          />
+        </>
+      ) : null}
+
       {settings.showEnvironmentNotepad && activeThreadId ? (
         <>
           <EnvironmentSectionDivider />
@@ -343,12 +404,12 @@ export function EnvironmentPanel({
     </div>
   );
 
-  // Top-right overlay pinned to the chat column with p-3 edge gutters (same footprint in
-  // split panes and when the right dock is open). Docked mode additionally insets transcript
-  // content; floating overlays only without stealing flex width from the narrow chat pane.
+  // Top-right overlay over the chat column. Always floats — never insets transcript/composer
+  // (corner islands own the top chrome; insetting pushed content left and wasted space).
   return (
     <div
       className={ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME}
+      style={{ top: ENVIRONMENT_PANEL_TOP_OFFSET_PX }}
       data-environment-panel-variant={variant}
       aria-hidden={!open}
     >
@@ -356,7 +417,7 @@ export function EnvironmentPanel({
         className={cn(
           ENVIRONMENT_PANEL_SURFACE_CLASS_NAME,
           ENVIRONMENT_PANEL_MOTION_CLASS,
-          "flex max-h-full w-72 flex-col",
+          "flex max-h-full w-64 flex-col",
           open
             ? "pointer-events-auto translate-x-0 opacity-100"
             : "pointer-events-none translate-x-full opacity-0",

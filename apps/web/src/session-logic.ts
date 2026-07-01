@@ -23,6 +23,11 @@ import {
   isGenericToolTitle,
   normalizeCompactToolLabel,
 } from "./lib/toolCallLabel";
+import {
+  deriveWorkLogToolDetails,
+  mergeWorkLogToolDetails,
+  type WorkLogToolDetails,
+} from "./lib/toolCallDetails";
 import { isStalePendingRequestFailureDetail } from "./lib/pendingInteraction";
 import { stripProposedPlanBlocksFromText } from "./proposedPlan";
 
@@ -66,10 +71,20 @@ export interface WorkLogEntry {
   toolTitle?: string;
   toolName?: string;
   toolCallId?: string;
+  toolDetails?: WorkLogToolDetails;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   subagents?: ReadonlyArray<WorkLogSubagent>;
   subagentAction?: WorkLogSubagentAction;
+  automation?: WorkLogAutomation;
+}
+
+// Created-automation rows render as a dedicated card (icon + name + cadence + Open)
+// instead of a plain tool-call line, so carry just the fields that card needs.
+export interface WorkLogAutomation {
+  id: string;
+  name: string;
+  cadenceLabel: string;
 }
 
 export const WORK_LOG_PRESENTATION_VERSION = 6;
@@ -179,6 +194,37 @@ export type TimelineEntry =
       entry: WorkLogEntry;
     };
 
+const orderedActivitiesCache = new WeakMap<
+  ReadonlyArray<OrchestrationThreadActivity>,
+  ReadonlyArray<OrchestrationThreadActivity>
+>();
+
+function isActivityOrderStable(activities: ReadonlyArray<OrchestrationThreadActivity>): boolean {
+  for (let index = 1; index < activities.length; index += 1) {
+    if (compareActivitiesByOrder(activities[index - 1]!, activities[index]!) > 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Thread activity arrays are immutable store values and most call sites need the
+// same order; cache it so chat startup does not sort the same array repeatedly.
+function orderedActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  const cached = orderedActivitiesCache.get(activities);
+  if (cached) {
+    return cached;
+  }
+
+  const ordered = isActivityOrderStable(activities)
+    ? activities
+    : [...activities].sort(compareActivitiesByOrder);
+  orderedActivitiesCache.set(activities, ordered);
+  return ordered;
+}
+
 function formatDuration(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
   if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
@@ -269,6 +315,38 @@ export function canSessionAnswerPendingRequests(
   return session.status !== "closed" && session.status !== "error";
 }
 
+/**
+ * Minimal view a session needs to expose to answer "is a turn live?": its status
+ * label and its in-flight turn id. Kept structural (not `Pick<ThreadSession>`) so
+ * the predicate also accepts the orchestration read-model session, whose status is
+ * a wider union and whose `activeTurnId` is `TurnId | null` rather than
+ * `TurnId | undefined`. Both shapes satisfy this.
+ */
+type RunningTurnSessionView = {
+  status: string;
+  activeTurnId?: TurnId | null | undefined;
+};
+
+/**
+ * A session is actively running a turn: it reports the `running` status and still
+ * has an in-flight `activeTurnId`. This is the single rule for "there is live work
+ * on this session right now" — it gates destructive thread lifecycle actions
+ * (archive/delete must stop the turn first) and marks the latest turn as running
+ * during read-model reconciliation. Centralized so every gate agrees on what
+ * "running" means; widening it later (e.g. to also block `starting`) updates every
+ * caller at once instead of leaving a stale inline check behind.
+ */
+export function isSessionRunningTurn<T extends RunningTurnSessionView>(
+  session: T | null | undefined,
+): session is T & { activeTurnId: TurnId } {
+  return session != null && session.status === "running" && session.activeTurnId != null;
+}
+
+/** Thread-level form of {@link isSessionRunningTurn}: true while the thread's session has an in-flight turn. */
+export function isThreadRunningTurn(thread: Pick<Thread, "session">): boolean {
+  return isSessionRunningTurn(thread.session);
+}
+
 export function deriveActiveWorkStartedAt(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
@@ -307,7 +385,7 @@ export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = orderedActivities(activities);
 
   for (const activity of ordered) {
     const payload =
@@ -394,9 +472,6 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
@@ -413,7 +488,7 @@ export function derivePendingUserInputs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingUserInput[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = orderedActivities(activities);
 
   for (const activity of ordered) {
     const payload =
@@ -506,7 +581,7 @@ export function deriveActiveTaskListState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
 ): ActiveTaskListState | null {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = orderedActivities(activities);
   const allTaskListActivities = ordered.filter(
     (activity) => activity.kind === "turn.tasks.updated",
   );
@@ -555,7 +630,7 @@ export function deriveActiveBackgroundTasksState(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
 ): ActiveBackgroundTasksState | null {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = orderedActivities(activities);
   const activeTasks = new Map<string, { taskType?: string | undefined }>();
 
   for (const activity of ordered) {
@@ -699,7 +774,10 @@ export function findSidebarProposedPlan(input: {
     }
   }
 
-  return findLatestProposedPlan(activeThreadPlans, input.latestTurn?.turnId ?? null);
+  return findLatestProposedPlan(
+    activeThreadPlans.filter((plan) => plan.implementedAt === null),
+    input.latestTurn?.turnId ?? null,
+  );
 }
 
 export function hasActionableProposedPlan(
@@ -708,13 +786,26 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+export function buildSourceProposedPlanReference(input: {
+  threadId: ThreadId;
+  proposedPlan: Pick<ProposedPlan, "id"> | null | undefined;
+}): OrchestrationLatestTurn["sourceProposedPlan"] | undefined {
+  if (!input.proposedPlan) {
+    return undefined;
+  }
+  return {
+    threadId: input.threadId,
+    planId: input.proposedPlan.id,
+  };
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
   options: { visibleTurnIds?: ReadonlySet<TurnId | string> } = {},
 ): WorkLogEntry[] {
   const visibleTurnIds = options.visibleTurnIds;
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered = orderedActivities(activities);
   const entries = ordered
     .filter((activity) => shouldKeepActivityForWorkLog(activity, latestTurnId, visibleTurnIds))
     .filter((activity) => !shouldOmitRoutedCollabAgentToolActivity(activity))
@@ -747,6 +838,12 @@ function shouldKeepActivityForWorkLog(
 ): boolean {
   // Thread-level compaction progress has no provider turn id but should stay visible.
   if (activity.kind === "context-compaction" && activity.turnId === null) {
+    return true;
+  }
+
+  // Created-automation milestones are thread-scoped and carry no provider turn id;
+  // keep them so the transcript card survives once the thread has turn-stamped messages.
+  if (activity.kind === "automation.created") {
     return true;
   }
 
@@ -801,6 +898,21 @@ function normalizeWorkLogTextForComparison(value: string | undefined): string {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractWorkLogAutomation(
+  payload: Record<string, unknown> | null,
+): WorkLogAutomation | null {
+  if (!payload) {
+    return null;
+  }
+  const id = typeof payload.automationId === "string" ? payload.automationId : null;
+  const name = typeof payload.automationName === "string" ? payload.automationName : null;
+  if (!id || !name) {
+    return null;
+  }
+  const cadenceLabel = typeof payload.cadenceLabel === "string" ? payload.cadenceLabel : "";
+  return { id, name, cadenceLabel };
 }
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -867,6 +979,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (subagentAction) {
     entry.subagentAction = subagentAction;
   }
+  if (activity.kind === "automation.created") {
+    const automation = extractWorkLogAutomation(payload);
+    if (automation) {
+      entry.automation = automation;
+    }
+  }
   const readableTitle =
     extractCollabActionTitle(payload) ??
     deriveReadableToolTitle({
@@ -887,6 +1005,20 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       normalizeWorkLogTextForComparison(entry.toolTitle ?? entry.label)
   ) {
     delete entry.detail;
+  }
+  const toolDetails = deriveWorkLogToolDetails({
+    payload,
+    itemType,
+    requestKind,
+    command: entry.command,
+    rawCommand: entry.rawCommand,
+    detail: entry.detail,
+    changedFiles: entry.changedFiles ?? changedFiles,
+    label: entry.label,
+    toolTitle: entry.toolTitle,
+  });
+  if (toolDetails) {
+    entry.toolDetails = toolDetails;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1055,6 +1187,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolName = next.toolName ?? previous.toolName;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const toolDetails = mergeWorkLogToolDetails(previous.toolDetails, next.toolDetails);
   const turnId = next.turnId ?? previous.turnId;
   return {
     ...previous,
@@ -1073,6 +1206,7 @@ function mergeDerivedWorkLogEntries(
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolName ? { toolName } : {}),
     ...(toolCallId ? { toolCallId } : {}),
+    ...(toolDetails ? { toolDetails } : {}),
   };
 }
 
@@ -1868,6 +2002,59 @@ function compareActivityLifecycleRank(kind: string): number {
   return 1;
 }
 
+function compareTimelineEntries(left: TimelineEntry, right: TimelineEntry): number {
+  return left.createdAt.localeCompare(right.createdAt);
+}
+
+function areTimelineEntriesOrdered(entries: ReadonlyArray<TimelineEntry>): boolean {
+  for (let index = 1; index < entries.length; index += 1) {
+    if (compareTimelineEntries(entries[index - 1]!, entries[index]!) > 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sortedTimelineEntries(entries: TimelineEntry[]): TimelineEntry[] {
+  return areTimelineEntriesOrdered(entries) ? entries : entries.toSorted(compareTimelineEntries);
+}
+
+function mergeTimelineEntries(
+  left: ReadonlyArray<TimelineEntry>,
+  right: ReadonlyArray<TimelineEntry>,
+): TimelineEntry[] {
+  if (left.length === 0) {
+    return [...right];
+  }
+  if (right.length === 0) {
+    return [...left];
+  }
+
+  const merged: TimelineEntry[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const leftEntry = left[leftIndex]!;
+    const rightEntry = right[rightIndex]!;
+    if (compareTimelineEntries(leftEntry, rightEntry) <= 0) {
+      merged.push(leftEntry);
+      leftIndex += 1;
+    } else {
+      merged.push(rightEntry);
+      rightIndex += 1;
+    }
+  }
+  while (leftIndex < left.length) {
+    merged.push(left[leftIndex]!);
+    leftIndex += 1;
+  }
+  while (rightIndex < right.length) {
+    merged.push(right[rightIndex]!);
+    rightIndex += 1;
+  }
+  return merged;
+}
+
 export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
@@ -1910,8 +2097,13 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
+
+  return mergeTimelineEntries(
+    mergeTimelineEntries(
+      sortedTimelineEntries(messageRows),
+      sortedTimelineEntries(proposedPlanRows),
+    ),
+    sortedTimelineEntries(workRows),
   );
 }
 
