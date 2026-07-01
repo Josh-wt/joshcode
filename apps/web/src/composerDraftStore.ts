@@ -26,6 +26,7 @@ import {
   ProviderStartOptions,
   RuntimeMode,
   ThreadId,
+  ThreadWorkspaceContext,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Equal from "effect/Equal";
@@ -357,6 +358,8 @@ const PersistedDraftThreadState = Schema.Struct({
   entryPoint: DraftThreadEntryPointSchema.pipe(Schema.withDecodingDefault(() => "chat")),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  workspaceContexts: Schema.optionalKey(Schema.Array(ThreadWorkspaceContext)),
+  activeWorkspaceContextId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   lastKnownPr: Schema.optionalKey(Schema.NullOr(OrchestrationThreadPullRequest)),
   envMode: DraftThreadEnvModeSchema,
   isTemporary: Schema.optionalKey(Schema.Boolean),
@@ -408,6 +411,8 @@ export interface DraftThreadState {
   entryPoint: ThreadPrimarySurface;
   branch: string | null;
   worktreePath: string | null;
+  workspaceContexts?: ThreadWorkspaceContext[];
+  activeWorkspaceContextId?: string | null;
   lastKnownPr?: OrchestrationThreadPullRequest | null;
   envMode: DraftThreadEnvMode;
   isTemporary?: boolean;
@@ -417,6 +422,8 @@ export interface DraftThreadState {
 interface DraftThreadMutationOptions {
   branch?: string | null;
   worktreePath?: string | null;
+  workspaceContexts?: ThreadWorkspaceContext[];
+  activeWorkspaceContextId?: string | null;
   lastKnownPr?: OrchestrationThreadPullRequest | null;
   createdAt?: string;
   envMode?: DraftThreadEnvMode;
@@ -678,6 +685,14 @@ function buildDraftThreadState(input: {
         ? false
         : existingThread?.isTemporary === true;
   const nextPromotedTo = existingThread?.promotedTo;
+  const nextWorkspaceContexts =
+    options?.workspaceContexts === undefined
+      ? [...(existingThread?.workspaceContexts ?? [])]
+      : [...options.workspaceContexts];
+  const nextActiveWorkspaceContextId =
+    options?.activeWorkspaceContextId === undefined
+      ? (existingThread?.activeWorkspaceContextId ?? null)
+      : (options.activeWorkspaceContextId ?? null);
 
   return {
     projectId: input.projectId,
@@ -693,6 +708,8 @@ function buildDraftThreadState(input: {
     branch:
       options?.branch === undefined ? (existingThread?.branch ?? null) : (options.branch ?? null),
     worktreePath: nextWorktreePath,
+    workspaceContexts: nextWorkspaceContexts,
+    activeWorkspaceContextId: nextActiveWorkspaceContextId,
     lastKnownPr:
       options?.lastKnownPr === undefined
         ? (existingThread?.lastKnownPr ?? null)
@@ -720,6 +737,8 @@ function draftThreadStatesEqual(
     left.entryPoint === right.entryPoint &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
+    Equal.equals(left.workspaceContexts ?? [], right.workspaceContexts ?? []) &&
+    (left.activeWorkspaceContextId ?? null) === (right.activeWorkspaceContextId ?? null) &&
     Equal.equals(left.lastKnownPr ?? null, right.lastKnownPr ?? null) &&
     left.envMode === right.envMode &&
     (left.isTemporary === true) === (right.isTemporary === true) &&
@@ -2017,6 +2036,15 @@ function normalizeDraftThreadEntryPoint(value: unknown, fallback: ThreadPrimaryS
   return value === "terminal" || value === "chat" ? value : fallback;
 }
 
+function normalizeDraftWorkspaceContexts(value: unknown): ThreadWorkspaceContext[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  try {
+    return Schema.decodeUnknownSync(Schema.Array(ThreadWorkspaceContext))(value) as ThreadWorkspaceContext[];
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizePersistedDraftThreads(
   rawDraftThreadsByThreadId: unknown,
   rawProjectDraftThreadIdByProjectId: unknown,
@@ -2054,6 +2082,15 @@ function normalizePersistedDraftThreads(
         }
       }
       const normalizedWorktreePath = typeof worktreePath === "string" ? worktreePath : null;
+      const workspaceContexts = normalizeDraftWorkspaceContexts(
+        candidateDraftThread.workspaceContexts,
+      );
+      const activeWorkspaceContextId =
+        typeof candidateDraftThread.activeWorkspaceContextId === "string"
+          ? candidateDraftThread.activeWorkspaceContextId
+          : candidateDraftThread.activeWorkspaceContextId === null
+            ? null
+            : undefined;
       const isTemporary = candidateDraftThread.isTemporary === true ? true : undefined;
       const promotedTo =
         typeof candidateDraftThread.promotedTo === "string" &&
@@ -2082,6 +2119,8 @@ function normalizePersistedDraftThreads(
         entryPoint: normalizeDraftThreadEntryPoint(candidateDraftThread.entryPoint),
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
+        ...(workspaceContexts !== undefined ? { workspaceContexts } : {}),
+        ...(activeWorkspaceContextId !== undefined ? { activeWorkspaceContextId } : {}),
         ...(lastKnownPr ? { lastKnownPr } : {}),
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         ...(isTemporary ? { isTemporary: true } : {}),
@@ -2734,6 +2773,22 @@ function toHydratedThreadDraft(
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
+}
+
+function hydrateDraftThreadsFromPersisted(
+  draftThreadsByThreadId: PersistedComposerDraftStoreState["draftThreadsByThreadId"],
+): Record<ThreadId, DraftThreadState> {
+  return Object.fromEntries(
+    Object.entries(draftThreadsByThreadId).map(([threadId, draft]) => [
+      threadId,
+      {
+        ...draft,
+        ...(draft.workspaceContexts
+          ? { workspaceContexts: draft.workspaceContexts.map((context) => ({ ...context })) }
+          : {}),
+      },
+    ]),
+  ) as Record<ThreadId, DraftThreadState>;
 }
 
 export const useComposerDraftStore = create<ComposerDraftStoreState>()(
@@ -4193,7 +4248,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         return {
           ...currentState,
           draftsByThreadId,
-          draftThreadsByThreadId: normalizedPersisted.draftThreadsByThreadId,
+          draftThreadsByThreadId: hydrateDraftThreadsFromPersisted(
+            normalizedPersisted.draftThreadsByThreadId,
+          ),
           projectDraftThreadIdByProjectId: normalizedPersisted.projectDraftThreadIdByProjectId,
           stickyModelSelectionByProvider: normalizedPersisted.stickyModelSelectionByProvider ?? {},
           stickyActiveProvider: normalizedPersisted.stickyActiveProvider ?? null,

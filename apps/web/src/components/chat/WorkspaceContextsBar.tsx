@@ -11,7 +11,7 @@ import { useCallback, useMemo, useState } from "react";
 import { CentralIcon } from "~/lib/central-icons";
 import { PlusIcon, XIcon } from "~/lib/icons";
 
-import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "../../lib/gitReactQuery";
+import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions, gitQueryKeys } from "../../lib/gitReactQuery";
 import { hasWorkspaceContextSignature } from "../../lib/workspaceContextLogic";
 import { cn } from "../../lib/utils";
 import type { Project, ThreadWorkspacePatch } from "../../types";
@@ -44,7 +44,9 @@ function WorktreeGlyph({ className }: { className?: string }) {
 function WorkspaceContextChip(props: {
   context: ThreadWorkspaceContext;
   project: Project | undefined;
-  isPrimary: boolean;
+  isPrimaryRole: boolean;
+  isActive: boolean;
+  hasServerThread: boolean;
   onUpdateContext: (patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">) => void;
   onMakePrimary: () => void;
   onRemove: () => void;
@@ -57,11 +59,11 @@ function WorkspaceContextChip(props: {
     enabled: Boolean(projectCwd),
   });
   const isGitRepo = branchesQuery.data?.isRepo ?? false;
-  const label =
-    props.context.label ?? props.project?.name ?? props.project?.folderName ?? "Workspace";
+  const projectLabel =
+    props.project?.name ?? props.project?.folderName ?? props.context.label ?? "Workspace";
   const effectiveEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath: props.context.worktreePath,
-    hasServerThread: true,
+    hasServerThread: props.hasServerThread,
     draftThreadEnvMode: props.context.envMode,
     serverThreadEnvMode: props.context.envMode,
   });
@@ -120,23 +122,24 @@ function WorkspaceContextChip(props: {
     setContextWorkspace,
   ]);
 
-  const showBranchControls = isGitRepo && projectCwd;
+  const showBranchControls = isGitRepo && projectCwd && props.isPrimaryRole;
 
   return (
     <span
       className={cn(
         "inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1",
-        props.isPrimary
+        props.isPrimaryRole
           ? "border-border/80 bg-muted/30 text-foreground"
           : "border-border/60 bg-transparent text-muted-foreground",
+        props.isActive && !props.isPrimaryRole && "border-border/80 bg-muted/15 text-foreground",
         isPendingWorktree && "border-amber-500/40 bg-amber-500/10",
       )}
-      title={projectCwd ?? label}
+      title={projectCwd ?? projectLabel}
     >
       <FolderClosed className="size-3 shrink-0 opacity-70" aria-hidden="true" />
-      <span className="max-w-36 truncate font-medium">{label}</span>
-      {props.context.branch ? (
-        <span className="max-w-24 truncate text-muted-foreground/80">{props.context.branch}</span>
+      <span className="max-w-32 truncate font-medium">{projectLabel}</span>
+      {!showBranchControls && props.context.branch ? (
+        <span className="max-w-40 truncate text-muted-foreground/80">{props.context.branch}</span>
       ) : null}
       {showBranchControls ? (
         <>
@@ -191,6 +194,7 @@ function WorkspaceContextChip(props: {
             branchCwd={branchCwd}
             effectiveEnvMode={effectiveEnvMode}
             envLocked={false}
+            hasServerThread={props.hasServerThread}
             onSetThreadWorkspace={setContextWorkspace}
             menuSide="bottom"
             variant="toolbar"
@@ -210,12 +214,12 @@ function WorkspaceContextChip(props: {
         >
           {createWorktreeMutation.isPending ? "Creating…" : "Create worktree"}
         </Button>
-      ) : workspaceState === "worktree-ready" && !props.isPrimary ? (
+      ) : workspaceState === "worktree-ready" && !props.isPrimaryRole ? (
         <span className="rounded-full bg-background/70 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
           worktree
         </span>
       ) : null}
-      {props.isPrimary ? (
+      {props.isPrimaryRole ? (
         <span className="rounded px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
           primary
         </span>
@@ -231,7 +235,7 @@ function WorkspaceContextChip(props: {
       <button
         type="button"
         className="ml-0.5 rounded-full text-muted-foreground hover:text-foreground"
-        aria-label={`Remove ${label} context`}
+        aria-label={`Remove ${projectLabel} context`}
         onClick={props.onRemove}
       >
         <XIcon className="size-3" />
@@ -248,11 +252,23 @@ function AddBranchContextSubmenu(props: {
     patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">,
   ) => void;
 }) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const branchesQuery = useQuery({
     ...gitBranchesQueryOptions(props.project.cwd),
     enabled: open && Boolean(props.project.cwd),
   });
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      setOpen(nextOpen);
+      if (nextOpen && props.project.cwd) {
+        void queryClient.invalidateQueries({
+          queryKey: gitQueryKeys.branches(props.project.cwd),
+        });
+      }
+    },
+    [props.project.cwd, queryClient],
+  );
   const branches = useMemo(
     () => dedupeRemoteBranchesWithLocalMatches(branchesQuery.data?.branches ?? []),
     [branchesQuery.data?.branches],
@@ -278,7 +294,7 @@ function AddBranchContextSubmenu(props: {
   }
 
   return (
-    <MenuSub open={open} onOpenChange={setOpen}>
+    <MenuSub open={open} onOpenChange={handleOpenChange}>
       <MenuSubTrigger className="min-w-0">
         <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="min-w-0 truncate">Add branch for {projectLabel}</span>
@@ -313,6 +329,7 @@ export function WorkspaceContextsBar(props: {
   projects: readonly Project[];
   contexts: readonly ThreadWorkspaceContext[];
   activeContextId: string | null;
+  hasServerThread: boolean;
   className?: string;
   /** Hide the primary chip when another control (e.g. ProjectPicker) already shows it. */
   hidePrimaryChip?: boolean;
@@ -355,13 +372,16 @@ export function WorkspaceContextsBar(props: {
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
         {visibleContexts.map((context) => {
           const project = props.projects.find((entry) => entry.id === context.projectId);
-          const isPrimary = context.id === activeContextId || context.role === "primary";
+          const isPrimaryRole = context.role === "primary" || context.id === "primary";
+          const isActive = context.id === activeContextId;
           return (
             <WorkspaceContextChip
               key={context.id}
               context={context}
               project={project}
-              isPrimary={isPrimary}
+              isPrimaryRole={isPrimaryRole}
+              isActive={isActive}
+              hasServerThread={props.hasServerThread}
               onUpdateContext={(patch) => props.onUpdateContext(context.id, patch)}
               onMakePrimary={() => props.onMakePrimary(context.id)}
               onRemove={() => props.onRemoveContext(context.id)}

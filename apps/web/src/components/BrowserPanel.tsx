@@ -66,6 +66,7 @@ import {
   normalizeBrowserAddressInput,
   resolveBrowserChromeStatus,
   resolveBrowserAddressSync,
+  shouldDismissBrowserHostPanelOnTabClose,
   type BrowserAddressSuggestion,
 } from "./BrowserPanel.logic";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
@@ -514,6 +515,9 @@ export function BrowserPanel({
   const threadBrowserState = useStore(useBrowserStateStore, selectThreadBrowserState(threadId));
   const recentHistory = useStore(useBrowserStateStore, selectThreadBrowserHistory(threadId));
   const upsertThreadState = useBrowserStateStore((store) => store.upsertThreadState);
+  const removeThreadState = useBrowserStateStore((store) => store.removeThreadState);
+  const onClosePanelRef = useRef(onClosePanel);
+  onClosePanelRef.current = onClosePanel;
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const composerDraftImageCount = useComposerDraftStore(
     (store) => store.draftsByThreadId[threadId]?.images.length ?? 0,
@@ -1264,23 +1268,28 @@ export function BrowserPanel({
 
   const onCloseTab = useCallback(
     (tabId: string) => {
-      if (!ensureLiveRuntime()) {
+      const tabs = useBrowserStateStore.getState().threadStatesByThreadId[threadId]?.tabs ?? [];
+      const dismissHostPanel =
+        shouldDismissBrowserHostPanelOnTabClose({ tabs, closingTabId: tabId }) ||
+        (mode === "sidebar" && tabs.length <= 1);
+      if (dismissHostPanel) {
+        onClosePanelRef.current();
+        removeThreadState(threadId);
         return;
       }
+
       if (!api) {
         return;
       }
+
       void runBrowserAction(() => api.browser.closeTab({ threadId, tabId })).then((state) => {
         if (!state) {
           return;
         }
         upsertThreadState(state);
-        if (!state.open && state.tabs.length === 0) {
-          onClosePanel();
-        }
       });
     },
-    [api, ensureLiveRuntime, onClosePanel, runBrowserAction, threadId, upsertThreadState],
+    [api, mode, removeThreadState, runBrowserAction, threadId, upsertThreadState],
   );
 
   const header = (
@@ -1525,12 +1534,7 @@ export function BrowserPanel({
       <div className="flex min-h-0 flex-1 flex-col">
         <div
           ref={browserTabsBarRef}
-          className={cn(
-            "flex items-center gap-2 border-b border-border px-2 py-1.5",
-            // Extend the frameless window drag region across the tab strip's empty space so
-            // the panel is easy to grab; interactive children stay no-drag via global CSS.
-            isElectron && mode !== "sheet" && "drag-region",
-          )}
+          className="flex items-center gap-2 border-b border-border px-2 py-1.5 [-webkit-app-region:no-drag]"
         >
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
             {threadBrowserState?.tabs.map((tab) => {
@@ -1576,7 +1580,7 @@ export function BrowserPanel({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    className={closeButtonClassName(isActive)}
+                    className={cn(closeButtonClassName(isActive), "[-webkit-app-region:no-drag]")}
                     onClick={(event) => {
                       event.stopPropagation();
                       onCloseTab(tab.id);

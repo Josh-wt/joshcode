@@ -100,6 +100,10 @@
       "types": "./src/threadWorkspace.ts",
       "import": "./src/threadWorkspace.ts"
     },
+    "./sidechatWorkspace": {
+      "types": "./src/sidechatWorkspace.ts",
+      "import": "./src/sidechatWorkspace.ts"
+    },
     "./subagents": {
       "types": "./src/subagents.ts",
       "import": "./src/subagents.ts"

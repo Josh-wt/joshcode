@@ -153,6 +153,7 @@ export const TrophyIcon = adaptIcon(IconTrophy);
 // Automations nav, slash command, created card, environment section), so it is
 // sourced from the Central icon set rather than the Tabler stroke icon.
 export const ClockIcon = centralIconWrapper("clock");
+export const AutomationIcon = ClockIcon;
 export const ChartBarIcon = adaptIcon(IconChartBar);
 export const ShareIcon = adaptIcon(IconShare3);
 export const SparklesIcon = adaptIcon(IconSparkles);

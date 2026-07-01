@@ -16,6 +16,7 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationThread,
   ThreadId,
+  ThreadWorkspaceContext,
   type ProviderSession,
   type RuntimeMode,
   TurnId,
@@ -162,11 +163,13 @@ const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const HANDOFF_CONTEXT_WRAPPER_OVERHEAD =
   "<handoff_context>\n\n</handoff_context>\n\n<latest_user_message>\n\n</latest_user_message>"
     .length;
-const SIDECHAT_BOUNDARY_INSTRUCTION =
-  "You are in a sidechat. Treat all prior conversation as reference-only context. Do not continue any prior task automatically. Do not mutate files, git, or the workspace and do not run workspace-changing commands unless the latest user message explicitly asks you to do so after this boundary. Use this sidechat for focused explanation, safety checks, summaries, and alternatives.";
+import {
+  resolveSidechatBoundaryInstruction,
+  SIDECHAT_READONLY_BOUNDARY_INSTRUCTION,
+} from "@t3tools/shared/sidechatWorkspace";
 
-function wrapSidechatInput(messageText: string): string {
-  return `<sidechat_boundary>\n${SIDECHAT_BOUNDARY_INSTRUCTION}\n</sidechat_boundary>\n\n<latest_user_message>\n${messageText}\n</latest_user_message>`;
+function wrapSidechatInput(messageText: string, instruction: string): string {
+  return `<sidechat_boundary>\n${instruction}\n</sidechat_boundary>\n\n<latest_user_message>\n${messageText}\n</latest_user_message>`;
 }
 
 function escapeWorkspaceContextAttribute(value: string): string {
@@ -179,7 +182,7 @@ function escapeWorkspaceContextAttribute(value: string): string {
 
 function buildWorkspaceContextPreamble(
   contexts: ReadonlyArray<{
-    readonly context: OrchestrationThread["workspaceContexts"][number];
+    readonly context: ThreadWorkspaceContext;
     readonly cwd: string | null;
     readonly primary: boolean;
   }>,
@@ -336,7 +339,7 @@ const make = Effect.gen(function* () {
   ) {
     const projectIds = new Set([
       thread.projectId,
-      ...thread.workspaceContexts.map((context) => context.projectId),
+      ...(thread.workspaceContexts ?? []).map((context) => context.projectId),
     ]);
     const projects: OrchestrationProjectShell[] = [];
     for (const projectId of projectIds) {
@@ -978,8 +981,27 @@ const make = Effect.gen(function* () {
       shouldBootstrapPriorTranscriptContext && availableBootstrapChars > 0
         ? buildPriorTranscriptBootstrapText(thread, input.messageId, availableBootstrapChars)
         : null;
+    const sidechatSourceThread =
+      thread.sidechatSourceThreadId != null
+        ? yield* resolveThread(thread.sidechatSourceThreadId)
+        : null;
+    const sidechatBoundaryInstruction = thread.sidechatSourceThreadId
+      ? resolveSidechatBoundaryInstruction({
+          sidechat: {
+            envMode: thread.envMode ?? "local",
+            branch: thread.branch,
+            worktreePath: thread.worktreePath,
+          },
+          source: sidechatSourceThread
+            ? {
+                branch: sidechatSourceThread.branch,
+                worktreePath: sidechatSourceThread.worktreePath,
+              }
+            : null,
+        })
+      : SIDECHAT_READONLY_BOUNDARY_INSTRUCTION;
     const boundaryMessageText = thread.sidechatSourceThreadId
-      ? wrapSidechatInput(input.messageText)
+      ? wrapSidechatInput(input.messageText, sidechatBoundaryInstruction)
       : input.messageText;
     const workspaceContextPreamble = buildWorkspaceContextPreamble(
       yield* resolveProjectedThreadWorkspaceContexts(thread),

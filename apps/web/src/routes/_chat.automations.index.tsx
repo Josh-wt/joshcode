@@ -9,7 +9,6 @@ import {
   CHAT_SURFACE_HEADER_PADDING_X_CLASS,
 } from "~/components/chat/chatHeaderControls";
 import { CHAT_BACKGROUND_CLASS_NAME } from "~/components/chat/composerPickerStyles";
-import { SidebarHeaderNavigationControls } from "~/components/SidebarHeaderNavigationControls";
 import { Button } from "~/components/ui/button";
 import { RouteInsetSurface } from "~/components/RouteInsetSurface";
 import {
@@ -386,7 +385,6 @@ function AutomationsRouteView() {
           )}
         >
           <div className={cn("flex items-center gap-2 sm:gap-3", CHAT_SURFACE_HEADER_HEIGHT_CLASS)}>
-            <SidebarHeaderNavigationControls />
             <div className="min-w-0 flex-1" />
             <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
               <Button

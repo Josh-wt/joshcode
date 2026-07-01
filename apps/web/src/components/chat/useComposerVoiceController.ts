@@ -22,6 +22,7 @@ interface UseComposerVoiceControllerOptions {
   activeThreadId: ThreadId | null;
   threadId: ThreadId;
   selectedProvider: ProviderKind;
+  authStatus: "authenticated" | "unauthenticated" | "unknown" | null;
   voiceTranscriptionAvailable: boolean;
   pendingUserInputCount: number;
   onTranscriptReady: (transcript: string) => void;
@@ -48,6 +49,7 @@ export function useComposerVoiceController(
     activeThreadId,
     threadId,
     selectedProvider,
+    authStatus,
     voiceTranscriptionAvailable,
     pendingUserInputCount,
     onTranscriptReady,
@@ -75,11 +77,12 @@ export function useComposerVoiceController(
   const { canStartVoiceNotes, showVoiceNotesControl } = useMemo(
     () =>
       deriveComposerVoiceState({
+        authStatus,
         voiceTranscriptionAvailable,
         isRecording: isVoiceRecording,
         isTranscribing: isVoiceTranscribing,
       }),
-    [isVoiceRecording, isVoiceTranscribing, voiceTranscriptionAvailable],
+    [authStatus, isVoiceRecording, isVoiceTranscribing, voiceTranscriptionAvailable],
   );
 
   useEffect(() => {

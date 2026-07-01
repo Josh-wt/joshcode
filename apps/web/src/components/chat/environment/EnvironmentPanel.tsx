@@ -49,6 +49,10 @@ import { EnvironmentPinnedSection } from "./EnvironmentPinnedSection";
 import { EnvironmentProjectInstructionsSection } from "./EnvironmentProjectInstructionsSection";
 import { ENVIRONMENT_PANEL_RECAP_MARKDOWN_CLASS_NAME } from "./environmentPanelStyles";
 import {
+  APP_TOP_BAR_ISLAND_OVERHANG_PX,
+  APP_TOP_BAR_ISLAND_TOP_OFFSET_PX,
+} from "~/components/thread-tabs/threadTabBar.logic";
+import {
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
   EnvironmentCollapsibleSection,
   EnvironmentLabeledSection,
@@ -57,14 +61,15 @@ import {
   EnvironmentSectionDivider,
 } from "./EnvironmentRow";
 
-// Horizontal space (px) the docked card reserves on the right edge of the chat area.
-// Mirrors the card footprint — w-72 (288px) plus the p-3 wrapper gutters — so insetting
-// the chat content by this amount clears the overlay while leaving the transcript's
-// scrollbar pinned to the viewport's far right.
+// Mirrors the card footprint — w-72 (288px) plus the wrapper gutters — when docked inset was used.
 export const ENVIRONMENT_DOCKED_CONTENT_INSET_PX = 312;
 
+/** Clearance below the top-bar corner islands before the environment card starts. */
+export const ENVIRONMENT_PANEL_TOP_OFFSET_PX =
+  APP_TOP_BAR_ISLAND_TOP_OFFSET_PX + APP_TOP_BAR_ISLAND_OVERHANG_PX + 4;
+
 const ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME =
-  "pointer-events-none absolute inset-y-0 right-0 z-20 flex flex-col p-3";
+  "pointer-events-none absolute right-0 bottom-0 z-20 flex flex-col pb-3 pr-2";
 
 export interface EnvironmentPanelProps {
   /** Drives the slide-in/out transition; the panel stays mounted so CSS can interpolate. */
@@ -399,12 +404,12 @@ export function EnvironmentPanel({
     </div>
   );
 
-  // Top-right overlay pinned to the chat column with p-3 edge gutters (same footprint in
-  // split panes and when the right dock is open). Docked mode additionally insets transcript
-  // content; floating overlays only without stealing flex width from the narrow chat pane.
+  // Top-right overlay over the chat column. Always floats — never insets transcript/composer
+  // (corner islands own the top chrome; insetting pushed content left and wasted space).
   return (
     <div
       className={ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME}
+      style={{ top: ENVIRONMENT_PANEL_TOP_OFFSET_PX }}
       data-environment-panel-variant={variant}
       aria-hidden={!open}
     >
@@ -412,7 +417,7 @@ export function EnvironmentPanel({
         className={cn(
           ENVIRONMENT_PANEL_SURFACE_CLASS_NAME,
           ENVIRONMENT_PANEL_MOTION_CLASS,
-          "flex max-h-full w-72 flex-col",
+          "flex max-h-full w-64 flex-col",
           open
             ? "pointer-events-auto translate-x-0 opacity-100"
             : "pointer-events-none translate-x-full opacity-0",

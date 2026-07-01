@@ -8,6 +8,8 @@ export const ProjectionThreadWorkspaceContextsColumn = Schema.NullOr(
 ).pipe(
   Schema.decodeTo(Schema.Array(ThreadWorkspaceContext), {
     decode: SchemaGetter.transform((value) => value ?? []),
-    encode: SchemaGetter.transform((value) => value),
+    // Stored JSON uses plain strings; branded ProjectId is restored on decode.
+    // @ts-expect-error encode targets persisted JSON shape without brands
+    encode: SchemaGetter.transform((value) => (value.length === 0 ? null : value)),
   }),
 );

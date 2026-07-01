@@ -164,6 +164,16 @@ export function appendWorkspaceContext(
   ];
 }
 
+export function resolvePrimaryWorkspaceContextId(
+  contexts: readonly ThreadWorkspaceContext[],
+): string | null {
+  return (
+    contexts.find((context) => context.id === "primary")?.id ??
+    contexts.find((context) => context.role === "primary")?.id ??
+    null
+  );
+}
+
 export function resolveActiveWorkspaceContextId(
   contexts: readonly ThreadWorkspaceContext[],
   activeContextId: string | null,
@@ -171,7 +181,5 @@ export function resolveActiveWorkspaceContextId(
   if (activeContextId !== null && contexts.some((context) => context.id === activeContextId)) {
     return activeContextId;
   }
-  return (
-    contexts.find((context) => context.role === "primary")?.id ?? contexts[0]?.id ?? null
-  );
+  return resolvePrimaryWorkspaceContextId(contexts) ?? contexts[0]?.id ?? null;
 }

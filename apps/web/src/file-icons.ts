@@ -152,6 +152,9 @@ const FILE_ICON_BY_EXTENSION: Record<string, string> = {
 };
 
 export function basenameOfPath(pathValue: string): string {
+  if (typeof pathValue !== "string" || pathValue.length === 0) {
+    return "";
+  }
   const slashIndex = Math.max(pathValue.lastIndexOf("/"), pathValue.lastIndexOf("\\"));
   if (slashIndex === -1) return pathValue;
   return pathValue.slice(slashIndex + 1);
@@ -196,6 +199,9 @@ function extensionCandidates(fileName: string): string[] {
 // Resolves the Central icon name for a file path, defaulting to the generic
 // bracket glyph when the basename/extension has no dedicated icon.
 export function getFileIconName(pathValue: string): string {
+  if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
+    return DEFAULT_FILE_ICON;
+  }
   const basename = basenameOfPath(pathValue).toLowerCase();
   const byName = FILE_ICON_BY_BASENAME[basename];
   if (byName) return byName;

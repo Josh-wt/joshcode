@@ -1,7 +1,8 @@
-import { ThreadId, TurnId, type ModelSlug } from "@t3tools/contracts";
+import { ProjectId, ThreadId, TurnId, type ModelSlug } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLocalDraftThread,
   appendVoiceTranscriptToPrompt,
   buildComposerMenuSelectionKey,
   filterSidechatTranscriptMessages,
@@ -1081,5 +1082,54 @@ describe("resolveRuntimeModeAfterApprovalDecision", () => {
   it("leaves runtime mode untouched for one-off accept and decline decisions", () => {
     expect(resolveRuntimeModeAfterApprovalDecision("approval-required", "accept")).toBeNull();
     expect(resolveRuntimeModeAfterApprovalDecision("approval-required", "decline")).toBeNull();
+  });
+});
+
+describe("buildLocalDraftThread", () => {
+  it("preserves workspace context metadata from draft thread state", () => {
+    const projectId = ProjectId.makeUnsafe("project-1");
+    const thread = buildLocalDraftThread(
+      ThreadId.makeUnsafe("thread-1"),
+      {
+        projectId,
+        createdAt: "2026-06-27T00:00:00.000Z",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        entryPoint: "chat",
+        branch: "main",
+        worktreePath: null,
+        envMode: "local",
+        workspaceContexts: [
+          {
+            id: "primary",
+            projectId,
+            label: "Project",
+            role: "primary",
+            accessMode: "read-write",
+            cwd: "/tmp/project",
+            envMode: "local",
+            branch: "main",
+            worktreePath: null,
+          },
+          {
+            id: "project:project-1:local:feature",
+            projectId,
+            label: "Project (feature)",
+            role: "context",
+            accessMode: "read-write",
+            cwd: "/tmp/project",
+            envMode: "local",
+            branch: "feature",
+            worktreePath: null,
+          },
+        ],
+        activeWorkspaceContextId: "primary",
+      },
+      { provider: "codex", model: "gpt-5.4" as ModelSlug },
+      null,
+    );
+
+    expect(thread.workspaceContexts).toHaveLength(2);
+    expect(thread.activeWorkspaceContextId).toBe("primary");
   });
 });

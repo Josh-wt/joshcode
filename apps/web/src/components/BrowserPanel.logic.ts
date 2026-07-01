@@ -232,3 +232,12 @@ export function resolveBrowserAddressSync(
     syncedValue: input.nextDisplayValue,
   };
 }
+
+// Closing the last in-panel tab dismisses the hosting surface (right dock pane or
+// split-embedded browser). Additional tabs only remove the one tab.
+export function shouldDismissBrowserHostPanelOnTabClose(input: {
+  tabs: ReadonlyArray<Pick<BrowserTabState, "id">>;
+  closingTabId: string;
+}): boolean {
+  return input.tabs.filter((tab) => tab.id !== input.closingTabId).length === 0;
+}

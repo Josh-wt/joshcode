@@ -4,8 +4,6 @@
 // hex-encoded) read-only, and calls the OAuth usage endpoint, mapping the 5h/weekly/sonnet
 // utilization windows + extra-usage credits. Reference: openusage plugins/claude/plugin.js.
 
-import nodePath from "node:path";
-
 import type {
   ServerProviderUsageLimit,
   ServerProviderUsageLine,
@@ -13,10 +11,17 @@ import type {
 } from "@t3tools/contracts";
 
 import {
+  ensureClaudeCredentialsFresh,
+  readClaudeOAuthCreds,
+  refreshClaudeOAuthCreds,
+  resolveClaudeCredentialsPaths,
+  shouldRefreshClaudeOAuthCreds,
+  type ClaudeOAuthCreds,
+} from "../../claudeCredentials.ts";
+import {
   decodeKeychainJson,
   readJsonFile,
   readKeychainPassword,
-  refreshOAuthAccessToken,
 } from "../credentials";
 import { fetchJson, isAuthFailureStatus } from "../http";
 import {
@@ -35,64 +40,43 @@ import type { ProviderUsageContext, ProviderUsageFetcher } from "../types";
 
 const SOURCE = "claude-oauth-usage";
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
-const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
-const SCOPES =
-  "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
-interface ClaudeCreds {
-  accessToken: string;
-  refreshToken: string | undefined;
-  expiresAtMs: number | undefined;
-  subscriptionType: string | undefined;
-  rateLimitTier: string | undefined;
-  scopes: ReadonlyArray<string>;
+function hasProfileScope(creds: ClaudeOAuthCreds): boolean {
+  return creds.scopes.length === 0 || creds.scopes.includes("user:profile");
 }
 
-function readScopes(oauth: Record<string, unknown> | null): ReadonlyArray<string> {
-  if (Array.isArray(oauth?.scopes)) {
-    return oauth.scopes.filter((scope): scope is string => typeof scope === "string");
+function claudePlanName(creds: ClaudeOAuthCreds): string | undefined {
+  if (!creds.subscriptionType) {
+    return undefined;
   }
-  const scopeText = asString(oauth?.scope);
-  return scopeText ? scopeText.split(/\s+/u).filter((scope) => scope.length > 0) : [];
+  let name = titleCase(creds.subscriptionType);
+  const tier = creds.rateLimitTier?.match(/(\d+x)/iu)?.[1];
+  if (tier) {
+    name += ` (${tier.toLowerCase()})`;
+  }
+  return name;
 }
 
-function readClaudeCreds(record: Record<string, unknown> | null): ClaudeCreds | null {
-  const oauth = asRecord(record?.claudeAiOauth);
-  const accessToken = asString(oauth?.accessToken);
-  if (!accessToken) {
-    return null;
-  }
-  return {
-    accessToken,
-    refreshToken: asString(oauth?.refreshToken),
-    expiresAtMs: asFiniteNumber(oauth?.expiresAt),
-    subscriptionType: asString(oauth?.subscriptionType),
-    rateLimitTier: asString(oauth?.rateLimitTier),
-    scopes: readScopes(oauth),
-  };
-}
+async function resolveClaudeCredCandidates(ctx: ProviderUsageContext): Promise<ClaudeOAuthCreds[]> {
+  await ensureClaudeCredentialsFresh({
+    homeDir: ctx.homeDir,
+    env: ctx.env,
+    nowMs: ctx.nowMs,
+  });
 
-async function resolveClaudeCredCandidates(ctx: ProviderUsageContext): Promise<ClaudeCreds[]> {
-  const candidates: ClaudeCreds[] = [];
-  const paths: string[] = [];
-  if (ctx.env.CLAUDE_CONFIG_DIR) {
-    paths.push(nodePath.join(ctx.env.CLAUDE_CONFIG_DIR, ".credentials.json"));
-  }
-  paths.push(nodePath.join(ctx.homeDir, ".claude", ".credentials.json"));
-
-  for (const path of paths) {
-    const record = asRecord(await readJsonFile(path));
-    const creds = readClaudeCreds(record);
+  const candidates: ClaudeOAuthCreds[] = [];
+  for (const credentialsPath of resolveClaudeCredentialsPaths({
+    homeDir: ctx.homeDir,
+    env: ctx.env,
+  })) {
+    const record = asRecord(await readJsonFile(credentialsPath));
+    const creds = readClaudeOAuthCreds(record);
     if (creds) {
       candidates.push(creds);
     }
   }
 
-  // Claude Code may store the same service under the current macOS account; try that before
-  // the legacy service-only lookup so file-less installs still resolve like OpenUsage.
   const keychainAccount = asString(ctx.env.USER) ?? asString(ctx.env.LOGNAME);
   const keychain =
     keychainAccount !== undefined
@@ -109,57 +93,12 @@ async function resolveClaudeCredCandidates(ctx: ProviderUsageContext): Promise<C
       platform: ctx.platform,
     }));
   if (keychainFallback) {
-    const creds = readClaudeCreds(asRecord(decodeKeychainJson(keychainFallback)));
+    const creds = readClaudeOAuthCreds(asRecord(decodeKeychainJson(keychainFallback)));
     if (creds) {
       candidates.push(creds);
     }
   }
   return candidates;
-}
-
-function hasProfileScope(creds: ClaudeCreds): boolean {
-  return creds.scopes.length === 0 || creds.scopes.includes("user:profile");
-}
-
-function shouldRefreshClaudeCreds(creds: ClaudeCreds, nowMs: number): boolean {
-  return creds.expiresAtMs !== undefined && creds.expiresAtMs <= nowMs + REFRESH_BUFFER_MS;
-}
-
-function claudePlanName(creds: ClaudeCreds): string | undefined {
-  if (!creds.subscriptionType) {
-    return undefined;
-  }
-  let name = titleCase(creds.subscriptionType);
-  const tier = creds.rateLimitTier?.match(/(\d+x)/iu)?.[1];
-  if (tier) {
-    name += ` (${tier.toLowerCase()})`;
-  }
-  return name;
-}
-
-function applyRefreshedClaudeCreds(
-  creds: ClaudeCreds,
-  refreshed: { accessToken: string; refreshToken?: string; expiresAtMs?: number },
-): ClaudeCreds {
-  return {
-    ...creds,
-    accessToken: refreshed.accessToken,
-    refreshToken: refreshed.refreshToken ?? creds.refreshToken,
-    expiresAtMs: refreshed.expiresAtMs ?? creds.expiresAtMs,
-  };
-}
-
-async function refreshClaudeCreds(creds: ClaudeCreds): Promise<ClaudeCreds | null> {
-  if (!creds.refreshToken) {
-    return null;
-  }
-  const refreshed = await refreshOAuthAccessToken({
-    refreshUrl: REFRESH_URL,
-    refreshToken: creds.refreshToken,
-    clientId: CLIENT_ID,
-    scope: SCOPES,
-  });
-  return refreshed ? applyRefreshedClaudeCreds(creds, refreshed) : null;
 }
 
 export function parseClaudeUsage(input: { json: unknown; nowMs: number; planName?: string }) {
@@ -240,8 +179,8 @@ export const claudeUsageFetcher: ProviderUsageFetcher = {
       }
 
       let activeCreds = creds;
-      if (shouldRefreshClaudeCreds(activeCreds, ctx.nowMs)) {
-        const refreshed = await refreshClaudeCreds(activeCreds);
+      if (shouldRefreshClaudeOAuthCreds(activeCreds, ctx.nowMs)) {
+        const refreshed = await refreshClaudeOAuthCreds(activeCreds);
         if (refreshed) {
           activeCreds = refreshed;
         } else if (activeCreds.expiresAtMs !== undefined && activeCreds.expiresAtMs <= ctx.nowMs) {
@@ -252,7 +191,7 @@ export const claudeUsageFetcher: ProviderUsageFetcher = {
       try {
         let result = await fetchClaudeUsage(activeCreds.accessToken);
         if (isAuthFailureStatus(result.status) && activeCreds.refreshToken) {
-          const refreshed = await refreshClaudeCreds(activeCreds);
+          const refreshed = await refreshClaudeOAuthCreds(activeCreds);
           if (refreshed) {
             activeCreds = refreshed;
             result = await fetchClaudeUsage(activeCreds.accessToken);

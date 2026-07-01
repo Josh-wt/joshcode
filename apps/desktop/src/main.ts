@@ -2428,7 +2428,9 @@ function getWindowMaterialOptions(): BrowserWindowConstructorOptions {
 // uses a fully frameless shell and renderer-owned minimize/maximize/close controls,
 // so the toolbar can occupy the top edge instead of sitting below a native title bar.
 function getTitleBarOptions(): BrowserWindowConstructorOptions {
-  if (process.platform === "win32") {
+  // Windows and Linux use a frameless shell with renderer-owned window controls so
+  // the unified top bar can occupy the full window top edge (no native "Synara" title bar).
+  if (process.platform === "win32" || process.platform === "linux") {
     return { frame: false };
   }
   if (process.platform !== "darwin") {
@@ -2469,6 +2471,19 @@ function createWindow(): BrowserWindow {
   attachDesktopZoomFactorSync(window);
 
   window.webContents.on("context-menu", (event, params) => {
+    const hasNativeEditMenu =
+      params.misspelledWord ||
+      params.mediaType === "image" ||
+      params.editFlags.canCopy ||
+      params.editFlags.canCut ||
+      params.editFlags.canPaste ||
+      params.editFlags.canSelectAll ||
+      (params.selectionText?.trim().length ?? 0) > 0;
+    if (!hasNativeEditMenu) {
+      // xterm and other canvas surfaces show their own copy/paste menu in the renderer.
+      return;
+    }
+
     event.preventDefault();
 
     const menuTemplate: MenuItemConstructorOptions[] = [];

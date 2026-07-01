@@ -42,6 +42,9 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
+const LIST_BRANCHES_REMOTE_REFRESH_INTERVAL = Duration.seconds(30);
+const LIST_BRANCHES_REMOTE_REFRESH_TIMEOUT = Duration.seconds(15);
+const LIST_BRANCHES_REMOTE_REFRESH_CACHE_CAPACITY = 512;
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const EMPTY_TREE_OBJECT_ID = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const WORKING_TREE_DIFF_TIMEOUT_MS = 15_000;
@@ -1039,6 +1042,41 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
         Exit.isSuccess(exit) ? STATUS_UPSTREAM_REFRESH_INTERVAL : Duration.zero,
     });
 
+    const listBranchesRemoteRefreshCache = yield* Cache.makeWith({
+      capacity: LIST_BRANCHES_REMOTE_REFRESH_CACHE_CAPACITY,
+      lookup: (cwd: string) =>
+        executeGit(
+          "GitCore.listBranches.refreshRemotes",
+          cwd,
+          ["fetch", "--quiet", "--no-tags", "--all"],
+          {
+            timeoutMs: Duration.toMillis(LIST_BRANCHES_REMOTE_REFRESH_TIMEOUT),
+            allowNonZeroExit: true,
+          },
+        ).pipe(
+          Effect.tap((result) => {
+            if (result.code === 0 || result.stderr.trim().length === 0) {
+              return Effect.void;
+            }
+            return Effect.logWarning(
+              `GitCore.listBranches.refreshRemotes: fetch returned code ${result.code} for ${cwd}: ${result.stderr.trim()}`,
+            );
+          }),
+          Effect.asVoid,
+        ),
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit) ? LIST_BRANCHES_REMOTE_REFRESH_INTERVAL : Duration.zero,
+    });
+
+    const refreshRemotesForListBranches = (cwd: string): Effect.Effect<void, never> =>
+      Cache.get(listBranchesRemoteRefreshCache, cwd).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            `GitCore.listBranches: remote refresh failed for ${cwd}: ${String(error)}. Continuing with locally known remote refs.`,
+          ),
+        ),
+      );
+
     const refreshStatusUpstreamIfStale = (cwd: string): Effect.Effect<void, GitCommandError> =>
       Effect.gen(function* () {
         const upstream = yield* resolveCurrentUpstream(cwd);
@@ -1928,6 +1966,10 @@ export const makeGitCore = (options?: { executeOverride?: GitCoreShape["execute"
             ["branch", "--no-color"],
             stderr || "git branch failed",
           );
+        }
+
+        if (input.refreshRemotes === true) {
+          yield* refreshRemotesForListBranches(input.cwd);
         }
 
         const remoteBranchResultEffect = executeGit(

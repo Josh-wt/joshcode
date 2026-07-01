@@ -1,7 +1,9 @@
 // FILE: voiceTranscription.ts
-// Purpose: Proxies validated WAV voice clips to OpenRouter speech-to-text.
+// Purpose: Proxies validated WAV voice clips to OpenRouter or ChatGPT speech-to-text.
 // Layer: Server utility
-// Exports: transcribeVoiceWithOpenRouterSession
+// Exports: transcribeVoiceWithOpenRouterSession, transcribeVoiceWithChatGptSession
+
+import { Buffer } from "node:buffer";
 
 import type {
   ServerVoiceTranscriptionInput,
@@ -12,6 +14,15 @@ import {
   resolveOpenRouterApiKey,
 } from "@t3tools/shared/openRouterApiKey";
 import { transcribeVoiceWithOpenRouter } from "@t3tools/shared/openRouterVoiceTranscription";
+
+const CHATGPT_TRANSCRIPTIONS_URL = "https://chatgpt.com/backend-api/transcribe";
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+const MAX_DURATION_MS = 120_000;
+
+export interface ChatGptVoiceAuthContext {
+  readonly token: string;
+  readonly transcriptionUrl?: string;
+}
 
 export function isVoiceTranscriptionConfigured(baseDir: string): boolean {
   return isOpenRouterVoiceTranscriptionConfigured({ baseDir });
@@ -38,4 +49,148 @@ export async function transcribeVoiceWithOpenRouterSession(input: {
     ...(input.referer ? { referer: input.referer } : {}),
     ...(input.title ? { title: input.title } : {}),
   });
+}
+
+export async function transcribeVoiceWithChatGptSession(input: {
+  readonly request: ServerVoiceTranscriptionInput;
+  readonly resolveAuth: (refreshToken: boolean) => Promise<ChatGptVoiceAuthContext>;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<ServerVoiceTranscriptionResult> {
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    throw new Error("Voice transcription is unavailable in this runtime.");
+  }
+
+  const audioBuffer = decodeVoiceAudio(input.request);
+  let auth = await input.resolveAuth(false);
+  let response = await requestChatGptTranscription({
+    fetchImpl,
+    audioBuffer,
+    mimeType: input.request.mimeType,
+    token: auth.token,
+    ...(auth.transcriptionUrl ? { transcriptionUrl: auth.transcriptionUrl } : {}),
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    auth = await input.resolveAuth(true);
+    response = await requestChatGptTranscription({
+      fetchImpl,
+      audioBuffer,
+      mimeType: input.request.mimeType,
+      token: auth.token,
+      ...(auth.transcriptionUrl ? { transcriptionUrl: auth.transcriptionUrl } : {}),
+    });
+  }
+
+  if (!response.ok) {
+    throw new Error(await readTranscriptionErrorMessage(response));
+  }
+
+  const payload = (await response.json().catch(() => null)) as {
+    text?: unknown;
+    transcript?: unknown;
+  } | null;
+  const text = readString(payload?.text) ?? readString(payload?.transcript);
+  if (!text) {
+    throw new Error("The transcription response did not include any text.");
+  }
+
+  return { text };
+}
+
+function decodeVoiceAudio(input: ServerVoiceTranscriptionInput): Buffer {
+  if (input.mimeType !== "audio/wav") {
+    throw new Error("Only WAV audio is supported for voice transcription.");
+  }
+  if (input.sampleRateHz !== 24_000) {
+    throw new Error("Voice transcription requires 24 kHz mono WAV audio.");
+  }
+  if (input.durationMs <= 0) {
+    throw new Error("Voice messages must include a positive duration.");
+  }
+  if (input.durationMs > MAX_DURATION_MS) {
+    throw new Error("Voice messages are limited to 120 seconds.");
+  }
+
+  const normalizedBase64 = normalizeBase64(input.audioBase64);
+  if (!normalizedBase64 || !isLikelyBase64(normalizedBase64)) {
+    throw new Error("The recorded audio could not be decoded.");
+  }
+
+  const audioBuffer = Buffer.from(normalizedBase64, "base64");
+  if (!audioBuffer.length || audioBuffer.toString("base64") !== normalizedBase64) {
+    throw new Error("The recorded audio could not be decoded.");
+  }
+  if (audioBuffer.length > MAX_AUDIO_BYTES) {
+    throw new Error("Voice messages are limited to 10 MB.");
+  }
+  if (!isLikelyWavBuffer(audioBuffer)) {
+    throw new Error("The recorded audio is not a valid WAV file.");
+  }
+
+  return audioBuffer;
+}
+
+async function requestChatGptTranscription(input: {
+  readonly fetchImpl: typeof fetch;
+  readonly audioBuffer: Buffer;
+  readonly mimeType: string;
+  readonly token: string;
+  readonly transcriptionUrl?: string;
+}): Promise<Response> {
+  const formData = new FormData();
+  formData.append("file", new Blob([input.audioBuffer], { type: input.mimeType }), "voice.wav");
+
+  return input.fetchImpl(input.transcriptionUrl ?? CHATGPT_TRANSCRIPTIONS_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.token}`,
+    },
+    body: formData,
+  });
+}
+
+async function readTranscriptionErrorMessage(response: Response): Promise<string> {
+  let errorMessage = `Transcription failed with status ${response.status}.`;
+  try {
+    const payload = (await response.json()) as {
+      error?: { message?: unknown };
+      message?: unknown;
+    } | null;
+    const providerMessage =
+      readString(payload?.error?.message) ?? readString(payload?.message) ?? null;
+    if (providerMessage) {
+      errorMessage = providerMessage;
+    }
+  } catch {
+    // Keep the generic status-based message when the provider body is empty or invalid.
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return "Your ChatGPT login has expired. Sign in again.";
+  }
+
+  return errorMessage;
+}
+
+function normalizeBase64(value: string): string | null {
+  const normalized = value.trim().replace(/\s+/g, "");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function isLikelyBase64(value: string): boolean {
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
+function isLikelyWavBuffer(buffer: Buffer): boolean {
+  return (
+    buffer.length >= 12 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WAVE"
+  );
+}
+
+function readString(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
 }

@@ -29,7 +29,7 @@ describe("resolveSplitPaneWorkspaceDraftPlan", () => {
       resolveSplitPaneWorkspaceDraftPlan({
         workspaceRoot: "/repos/app",
         homeDir: HOME_DIR,
-        projects: [{ id: PROJECT_A, cwd: "/repos/app", kind: "project" }],
+        projects: [{ id: PROJECT_A, cwd: "/repos/app", kind: "project", name: "App", remoteName: "" }],
         threads: [],
       }),
     ).toEqual({
@@ -44,7 +44,7 @@ describe("resolveSplitPaneWorkspaceDraftPlan", () => {
       resolveSplitPaneWorkspaceDraftPlan({
         workspaceRoot: "/repos/other-app",
         homeDir: HOME_DIR,
-        projects: [{ id: PROJECT_HOME, cwd: HOME_DIR, kind: "chat", name: "Home" }],
+        projects: [{ id: PROJECT_HOME, cwd: HOME_DIR, kind: "chat", name: "Home", remoteName: "Home" }],
         threads: [],
       }),
     ).toEqual({

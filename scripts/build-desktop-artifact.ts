@@ -896,6 +896,26 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     });
   }
 
+  if (options.platform === "linux") {
+    const archSuffix = options.arch === "x64" ? "x86_64" : options.arch;
+    const builtAppImage = copiedArtifacts.find(
+      (artifact) => path.basename(artifact) === `Synara-${appVersion}-${archSuffix}.AppImage`,
+    );
+    if (builtAppImage) {
+      const latestLinkName = `Synara-latest-${archSuffix}.AppImage`;
+      yield* runCommand(
+        ChildProcess.make({
+          cwd: options.outputDir,
+          ...commandOutputOptions(options.verbose),
+          shell: process.platform === "win32",
+        })`ln -sf ${path.basename(builtAppImage)} ${latestLinkName}`,
+      );
+      yield* Effect.log(
+        `[desktop-artifact] Updated ${latestLinkName} -> ${path.basename(builtAppImage)}`,
+      );
+    }
+  }
+
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),
   );

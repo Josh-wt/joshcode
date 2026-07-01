@@ -865,6 +865,8 @@ describe("composerDraftStore project draft thread mapping", () => {
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
       lastKnownPr: null,
+      workspaceContexts: [],
+      activeWorkspaceContextId: null,
     });
     expect(useComposerDraftStore.getState().getDraftThread(threadId)).toEqual({
       projectId,
@@ -876,6 +878,8 @@ describe("composerDraftStore project draft thread mapping", () => {
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
       lastKnownPr: null,
+      workspaceContexts: [],
+      activeWorkspaceContextId: null,
     });
   });
 

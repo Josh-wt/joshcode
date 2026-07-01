@@ -26,12 +26,27 @@ export type CentralIconProps = Omit<HTMLAttributes<HTMLSpanElement>, "children">
   variant?: CentralIconVariant | undefined;
 };
 
+function normalizeCentralIconName(name: unknown): string | null {
+  if (typeof name !== "string") {
+    return null;
+  }
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 // Builds a public asset URL from the icon basename without allowing path traversal.
 export function getCentralIconUrl(
   name: string,
   variant: CentralIconVariant = DEFAULT_CENTRAL_ICON_VARIANT,
 ): string | null {
-  const normalizedName = name.endsWith(SVG_SUFFIX) ? name.slice(0, -SVG_SUFFIX.length) : name;
+  const iconName = normalizeCentralIconName(name);
+  if (!iconName) {
+    return null;
+  }
+
+  const normalizedName = iconName.endsWith(SVG_SUFFIX)
+    ? iconName.slice(0, -SVG_SUFFIX.length)
+    : iconName;
 
   if (!CENTRAL_ICON_NAME_PATTERN.test(normalizedName)) {
     return null;

@@ -1536,6 +1536,25 @@ function SingleChatSurface(props: {
     [openPane, props.threadId, requestImmediateDockHydration],
   );
 
+  const handleCloseDockPane = useCallback(
+    (paneId: string) => {
+      const pane = dockState.panes.find((entry) => entry.id === paneId);
+      closePane(props.threadId, paneId);
+      if (pane?.kind === "browser") {
+        // Drop any deep-linked `?panel=browser` flag so route bootstrap cannot
+        // immediately reopen the dock on the next search-driven effect pass.
+        lastAppliedRoutePanelSearchKeyRef.current = null;
+        void navigate({
+          to: "/$threadId",
+          params: { threadId: props.threadId },
+          replace: true,
+          search: (previous) => stripDiffSearchParams(previous),
+        });
+      }
+    },
+    [closePane, dockState.panes, navigate, props.threadId],
+  );
+
   const handleOpenEditorView = useCallback(() => {
     void navigate({
       to: "/$threadId",
@@ -1968,7 +1987,7 @@ function SingleChatSurface(props: {
             <BrowserPanel
               mode="sidebar"
               threadId={props.threadId}
-              onClosePanel={() => closePane(props.threadId, pane.id)}
+              onClosePanel={() => handleCloseDockPane(pane.id)}
               runtimeMode={context.runtimeMode}
               onRequestLive={requestActiveDockPaneLive}
             />
@@ -2065,6 +2084,8 @@ function SingleChatSurface(props: {
     },
     [
       closePane,
+      dockState.panes,
+      handleCloseDockPane,
       dockState.open,
       handleAskWhyInChat,
       handleCommentInChat,
@@ -2252,7 +2273,7 @@ function SingleChatSurface(props: {
           activePaneRuntimeMode={activePaneRuntimeMode}
           {...(paneLabelOverrides ? { paneLabelOverrides } : {})}
           onSelectPane={handleSelectDockPane}
-          onClosePane={(paneId) => closePane(props.threadId, paneId)}
+          onClosePane={(paneId) => handleCloseDockPane(paneId)}
           onCollapse={() => setDockOpen(props.threadId, false)}
           onOpenChange={(open) => setDockOpen(props.threadId, open)}
           onAddPane={handleAddDockPane}

@@ -56,6 +56,13 @@ describe("getFileIconName", () => {
     assert.equal(inferEntryKindFromPath("C:\\repo\\.gitignore"), "file");
     assert.equal(inferEntryKindFromPath("scripts"), "directory");
   });
+
+  it("falls back safely for malformed path values", () => {
+    assert.equal(getFileIconName(""), "code-brackets");
+    assert.equal(getFileIconName(null as unknown as string), "code-brackets");
+    assert.equal(getFileIconName(undefined as unknown as string), "code-brackets");
+    assert.equal(getFileIconName(42 as unknown as string), "code-brackets");
+  });
 });
 
 describe("getAttachmentIconName", () => {

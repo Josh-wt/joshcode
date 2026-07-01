@@ -731,6 +731,8 @@ export const makeWsRpcLayer = () =>
           rpcEffect(workspaceEntries.browse(input), "Failed to browse filesystem"),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           rpcEffect(open.openInEditor(input), "Failed to open editor"),
+        [WS_METHODS.shellRunDetachedCommand]: (input) =>
+          rpcEffect(open.runDetachedShellCommand(input), "Failed to run detached shell command"),
 
         [WS_METHODS.gitGithubRepository]: (input) =>
           rpcEffect(resolveGitHubRepository(git, input.cwd), "Failed to resolve GitHub repository"),

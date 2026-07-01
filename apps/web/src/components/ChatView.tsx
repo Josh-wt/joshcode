@@ -28,6 +28,7 @@ import {
   type ServerProviderStatus,
   ThreadId,
   ThreadMarkerId,
+  type ThreadWorkspaceContext,
   type ThreadMarker,
   type ThreadMarkerColor,
   type ThreadMarkerStyle,
@@ -235,7 +236,9 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
+  type Project,
   type Thread,
+  type ThreadWorkspacePatch,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useThreadWorkspaceHandoff } from "../hooks/useThreadWorkspaceHandoff";
@@ -366,6 +369,11 @@ import {
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatHeader } from "./chat/ChatHeader";
+import {
+  ChatHeaderActionCluster,
+  type ChatHeaderActionClusterProps,
+} from "./chat/ChatHeaderActionCluster";
+import { ChatChromeActionsBridge } from "~/chatChromeActionsContext";
 import { dispatchThreadNotes } from "~/pinnedMessages";
 import {
   mergeProjectInstructionsIntoThreadNotes,
@@ -464,6 +472,16 @@ import {
 import { getComposerTraitSelection } from "./chat/composerTraits";
 import { resolveRuntimeModelDescriptor } from "./chat/runtimeModelCapabilities";
 import { ProjectPicker } from "./chat/ProjectPicker";
+import { WorkspaceContextsBar } from "./chat/WorkspaceContextsBar";
+import {
+  appendWorkspaceContext,
+  buildProjectWorkspaceContext,
+  hasWorkspaceContextSignature,
+  resolveActiveWorkspaceContextId,
+  resolvePrimaryWorkspaceContextId,
+  resolveWorkspaceContextsBase,
+  updateThreadWorkspaceContext,
+} from "../lib/workspaceContextLogic";
 import { FolderClosed } from "./FolderClosed";
 import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
@@ -722,6 +740,23 @@ function getRateLimitBannerDismissalKey(
     status.resetsAt ?? "",
     typeof status.utilization === "number" ? String(Math.round(status.utilization * 100)) : "",
   ].join("\u001f");
+}
+
+function buildThreadPrimaryWorkspaceContext(input: {
+  thread: Thread;
+  project: Project;
+}): ThreadWorkspaceContext {
+  return {
+    id: "primary",
+    projectId: input.thread.projectId,
+    label: input.project.name || input.project.folderName,
+    role: "primary",
+    accessMode: "read-write",
+    cwd: input.thread.worktreePath ?? input.project.cwd,
+    envMode: input.thread.envMode ?? "local",
+    branch: input.thread.branch,
+    worktreePath: input.thread.worktreePath,
+  };
 }
 
 type ComposerPluginSuggestion = {
@@ -1549,6 +1584,288 @@ export default function ChatView({
   const isChatProject = isHomeChatContainer;
   const activeProjectScripts =
     activeProject?.kind === "project" ? activeProject.scripts : undefined;
+  const workspaceContextProjects = useStore((store) => store.projects);
+  const workspaceContexts = useMemo(() => {
+    if (!activeThread || !activeProject) return [];
+    const existingContexts = activeThread.workspaceContexts ?? [];
+    if (existingContexts.length === 0) {
+      return [];
+    }
+    const primaryContext = buildThreadPrimaryWorkspaceContext({
+      thread: activeThread,
+      project: activeProject,
+    });
+    return existingContexts.map((context) =>
+      context.id === "primary"
+        ? {
+            ...context,
+            ...primaryContext,
+            id: "primary",
+            role: "primary",
+            label: primaryContext.label,
+          }
+        : context,
+    );
+  }, [activeProject, activeThread]);
+  const threadPrimaryWorkspaceContext = useMemo(() => {
+    if (!activeThread || !activeProject) return null;
+    return buildThreadPrimaryWorkspaceContext({ thread: activeThread, project: activeProject });
+  }, [activeProject, activeThread]);
+  const activeWorkspaceContextId =
+    activeThread?.activeWorkspaceContextId ?? workspaceContexts[0]?.id ?? null;
+  const persistWorkspaceContexts = useCallback(
+    async (contexts: ThreadWorkspaceContext[], activeContextId: string | null) => {
+      if (!activeThread) return;
+      if (isLocalDraftThread) {
+        setDraftThreadContext(threadId, {
+          workspaceContexts: contexts,
+          activeWorkspaceContextId: activeContextId,
+        });
+        return;
+      }
+      setStoreThreadWorkspace(activeThread.id, {
+        workspaceContexts: contexts,
+        activeWorkspaceContextId: activeContextId,
+      });
+      const api = readNativeApi();
+      if (!api) return;
+      await api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        workspaceContexts: contexts,
+        activeWorkspaceContextId: activeContextId,
+      });
+    },
+    [
+      activeThread,
+      isLocalDraftThread,
+      setDraftThreadContext,
+      setStoreThreadWorkspace,
+      threadId,
+    ],
+  );
+  const handleAddWorkspaceContext = useCallback(
+    (projectId: ProjectId) => {
+      const project = workspaceContextProjects.find((entry) => entry.id === projectId);
+      if (!project || !activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
+      const nextContext = buildProjectWorkspaceContext({
+        project: {
+          id: project.id,
+          name: project.name,
+          folderName: project.folderName,
+          cwd: project.cwd,
+        },
+      });
+      if (hasWorkspaceContextSignature(currentContexts, nextContext)) {
+        toastManager.add({
+          type: "info",
+          title: "Context already attached",
+          description: "That folder and branch combination is already in this chat.",
+        });
+        return;
+      }
+      const nextContexts = appendWorkspaceContext(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+        nextContext,
+      );
+      void persistWorkspaceContexts(
+        nextContexts,
+        resolvePrimaryWorkspaceContextId(nextContexts) ?? activeWorkspaceContextId,
+      );
+    },
+    [
+      activeProject,
+      activeThread,
+      activeWorkspaceContextId,
+      persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
+      workspaceContextProjects,
+      workspaceContexts,
+    ],
+  );
+  const handleAddWorkspaceBranchContext = useCallback(
+    (
+      projectId: ProjectId,
+      patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">,
+    ) => {
+      const project = workspaceContextProjects.find((entry) => entry.id === projectId);
+      if (!project || !activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
+      const nextContext = buildProjectWorkspaceContext({
+        project: {
+          id: project.id,
+          name: project.name,
+          folderName: project.folderName,
+          cwd: project.cwd,
+        },
+        branch: patch.branch ?? null,
+        worktreePath: patch.worktreePath ?? null,
+        ...(patch.envMode !== undefined ? { envMode: patch.envMode } : {}),
+      });
+      if (hasWorkspaceContextSignature(currentContexts, nextContext)) {
+        toastManager.add({
+          type: "info",
+          title: "Branch already attached",
+          description: "That branch is already available as context in this chat.",
+        });
+        return;
+      }
+      const nextContexts = appendWorkspaceContext(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+        nextContext,
+      );
+      void persistWorkspaceContexts(
+        nextContexts,
+        resolvePrimaryWorkspaceContextId(nextContexts) ?? activeWorkspaceContextId,
+      );
+    },
+    [
+      activeProject,
+      activeThread,
+      activeWorkspaceContextId,
+      persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
+      workspaceContextProjects,
+      workspaceContexts,
+    ],
+  );
+  const handleBrowseFolderForContext = useCallback(async () => {
+    const api = readNativeApi();
+    if (!api || !activeThread || !activeProject) return;
+    const pickedPath = await api.dialogs.pickFolder();
+    if (!pickedPath) return;
+    const normalizePath = (path: string) => path.replace(/[\\/]+$/, "");
+    const normalizedPick = normalizePath(pickedPath);
+    const existingProject = workspaceContextProjects.find(
+      (project) =>
+        project.kind === "project" && normalizePath(project.cwd) === normalizedPick,
+    );
+    if (existingProject) {
+      handleAddWorkspaceContext(existingProject.id);
+      return;
+    }
+    toastManager.add({
+      type: "info",
+      title: "Folder not in sidebar",
+      description:
+        "Add this folder to the sidebar first (left panel → +), then attach it here as context.",
+    });
+  }, [activeProject, activeThread, handleAddWorkspaceContext, workspaceContextProjects]);
+  const handleRemoveWorkspaceContext = useCallback(
+    (contextId: string) => {
+      if (!activeThread || !activeProject || !threadPrimaryWorkspaceContext) return;
+      const currentContexts = resolveWorkspaceContextsBase(
+        workspaceContexts,
+        threadPrimaryWorkspaceContext,
+      );
+      const nextContexts = currentContexts.filter((context) => context.id !== contextId);
+      const nextActiveContextId =
+        activeWorkspaceContextId === contextId
+          ? (nextContexts.find((context) => context.id === "primary")?.id ??
+            nextContexts[0]?.id ??
+            null)
+          : activeWorkspaceContextId;
+      void persistWorkspaceContexts(nextContexts, nextActiveContextId);
+    },
+    [
+      activeProject,
+      activeThread,
+      activeWorkspaceContextId,
+      persistWorkspaceContexts,
+      threadPrimaryWorkspaceContext,
+      workspaceContexts,
+    ],
+  );
+  const handleMakeWorkspaceContextPrimary = useCallback(
+    (contextId: string) => {
+      void persistWorkspaceContexts(
+        workspaceContexts.map((context) => ({
+          ...context,
+          role: context.id === contextId ? "primary" : "context",
+        })),
+        contextId,
+      );
+    },
+    [persistWorkspaceContexts, workspaceContexts],
+  );
+  const handleUpdateWorkspaceContext = useCallback(
+    (
+      contextId: string,
+      patch: Pick<ThreadWorkspacePatch, "branch" | "worktreePath" | "envMode">,
+    ) => {
+      const project = workspaceContextProjects.find((entry) =>
+        workspaceContexts.some(
+          (context) => context.id === contextId && context.projectId === entry.id,
+        ),
+      );
+      if (!project) return;
+      const nextContexts = updateThreadWorkspaceContext(
+        workspaceContexts,
+        contextId,
+        project.cwd,
+        patch,
+      );
+      const updatedContext = nextContexts.find((context) => context.id === contextId);
+      if (
+        updatedContext &&
+        hasWorkspaceContextSignature(nextContexts, updatedContext, contextId)
+      ) {
+        toastManager.add({
+          type: "info",
+          title: "Branch already attached",
+          description: "Another context chip already uses that branch or worktree.",
+        });
+        return;
+      }
+      const isPrimaryContext =
+        contextId === "primary" ||
+        workspaceContexts.find((context) => context.id === contextId)?.role === "primary";
+      if (isPrimaryContext && activeThread) {
+        if (isLocalDraftThread) {
+          setDraftThreadContext(threadId, {
+            ...(patch.branch !== undefined ? { branch: patch.branch } : {}),
+            ...(patch.worktreePath !== undefined ? { worktreePath: patch.worktreePath } : {}),
+            ...(patch.envMode !== undefined ? { envMode: patch.envMode } : {}),
+          });
+        } else {
+          setStoreThreadWorkspace(activeThread.id, patch);
+          const api = readNativeApi();
+          if (api) {
+            void api.orchestration.dispatchCommand({
+              type: "thread.meta.update",
+              commandId: newCommandId(),
+              threadId: activeThread.id,
+              ...(patch.branch !== undefined ? { branch: patch.branch } : {}),
+              ...(patch.worktreePath !== undefined ? { worktreePath: patch.worktreePath } : {}),
+              ...(patch.envMode !== undefined ? { envMode: patch.envMode } : {}),
+            });
+          }
+        }
+      }
+      void persistWorkspaceContexts(nextContexts, activeWorkspaceContextId);
+    },
+    [
+      activeThread,
+      activeWorkspaceContextId,
+      isLocalDraftThread,
+      persistWorkspaceContexts,
+      setDraftThreadContext,
+      setStoreThreadWorkspace,
+      threadId,
+      workspaceContextProjects,
+      workspaceContexts,
+    ],
+  );
   const threadLineageThreads = useStore(
     useMemo(() => createThreadLineageSelector(activeThread?.id ?? null), [activeThread?.id]),
   );
@@ -2813,6 +3130,10 @@ export default function ChatView({
     isCenteredEmptyLanding &&
     Boolean(homeDir) &&
     isHomeChatContainerProject(activeProject, { homeDir, chatWorkspaceRoot });
+  const [workspaceContextsBarOpen, setWorkspaceContextsBarOpen] = useState(true);
+  useEffect(() => {
+    setWorkspaceContextsBarOpen(isCenteredEmptyLanding);
+  }, [isCenteredEmptyLanding, threadId]);
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
@@ -2981,6 +3302,24 @@ export default function ChatView({
       }),
     [activeProject?.cwd, activeThread?.branch, branchesQuery.data?.branches],
   );
+  useEffect(() => {
+    if (!isLocalDraftThread || !draftThread) {
+      return;
+    }
+    if (draftThread.envMode !== "worktree" || draftThread.worktreePath) {
+      return;
+    }
+    if (draftThread.branch || !activeRootBranch) {
+      return;
+    }
+    setDraftThreadContext(threadId, { branch: activeRootBranch });
+  }, [
+    activeRootBranch,
+    draftThread,
+    isLocalDraftThread,
+    setDraftThreadContext,
+    threadId,
+  ]);
   // Keep plugin suggestions referentially stable so prompt-sync effects do not loop on rerender.
   const providerPlugins = useMemo(
     () =>
@@ -8737,6 +9076,7 @@ export default function ChatView({
     activeProject,
     activeThread,
     activeRootBranch,
+    isGitRepo,
     isServerThread,
     supportsFastSlashCommand,
     canOfferCompactCommand:
@@ -8755,6 +9095,7 @@ export default function ChatView({
     runtimeMode,
     interactionMode,
     threadId,
+    queryClient,
     syncServerShellSnapshot,
     navigateToThread: (nextThreadId, options) =>
       navigate({
@@ -9348,6 +9689,7 @@ export default function ChatView({
   );
   const branchToolbarProps = {
     threadId: activeThread.id,
+    hasServerThread: isServerThread,
     onEnvModeChange,
     envLocked,
     onHandoffToWorktree,
@@ -9359,7 +9701,7 @@ export default function ChatView({
       : {}),
   };
   const showEmptyLandingBranchToolbar =
-    isCenteredEmptyLanding && activeProject?.kind === "project" && !isHomeChatContainer;
+    isCenteredEmptyLanding && activeProject?.kind === "project" && !isHomeChatContainer && isGitRepo;
   const showEmptyLandingProjectPicker =
     isCenteredEmptyLanding && isLocalDraftThread && activeProject?.kind === "project";
   const emptyLandingProjectChip =
@@ -9369,62 +9711,90 @@ export default function ChatView({
         <span className="min-w-0 truncate">{activeProjectDisplayName}</span>
       </span>
     ) : null;
-  const emptyLandingControls =
+  const hasComposerContextControls = Boolean(activeThread && activeProject);
+  const showWorkspaceContextsBar = hasComposerContextControls && workspaceContextsBarOpen;
+  const showWorkspaceContextsRevealControl =
+    hasComposerContextControls && !workspaceContextsBarOpen;
+  const showLegacyEmptyLandingControls =
     isCenteredEmptyLanding &&
+    !(showWorkspaceContextsBar && workspaceContexts.length > 0) &&
     (isEmptyChatLanding ||
       showEmptyLandingProjectPicker ||
-      emptyLandingProjectChip ||
-      showEmptyLandingBranchToolbar) ? (
+      (workspaceContexts.length === 0 &&
+        (Boolean(emptyLandingProjectChip) || showEmptyLandingBranchToolbar)));
+  const emptyLandingControls =
+    showLegacyEmptyLandingControls || showWorkspaceContextsBar ? (
       <div
         className={cn(
-          "chat-composer-shell relative mt-0 flex min-h-8 flex-nowrap items-center gap-x-1.5 overflow-hidden !rounded-t-none !rounded-b-[var(--composer-radius)] bg-[color-mix(in_srgb,var(--color-background-elevated-secondary)_76%,var(--color-background-surface)_24%)] px-2 pb-1 pt-0.5 shadow-[0_18px_36px_-26px_rgba(0,0,0,0.78)] transition-[background-color,box-shadow] duration-150 ease-out before:pointer-events-none before:absolute before:inset-x-0 before:-top-3 before:h-3 before:bg-inherit before:content-[''] motion-reduce:transition-none",
+          "chat-composer-shell relative mt-0 flex flex-wrap items-center gap-x-2 gap-y-1 !rounded-t-none !rounded-b-[var(--composer-radius)] bg-[color-mix(in_srgb,var(--color-background-elevated-secondary)_76%,var(--color-background-surface)_24%)] px-2 pb-1.5 pt-2 shadow-[0_18px_36px_-26px_rgba(0,0,0,0.78)] transition-[background-color,box-shadow] duration-150 ease-out before:pointer-events-none before:absolute before:inset-x-0 before:-top-3 before:h-3 before:bg-inherit before:content-[''] motion-reduce:transition-none",
           COMPOSER_COLUMN_FRAME_CLASS_NAME,
         )}
       >
-        {isEmptyChatLanding ? (
-          <ProjectPicker
-            align="start"
-            side="top"
-            showResetToHome={Boolean(resolvedThreadWorktreePath)}
-            selectedWorkspaceRoot={resolvedThreadWorktreePath}
-            onSelectProject={handleSelectProjectForEmptyDraft}
-            onSelectWorkspaceRoot={handleSelectWorkspaceRoot}
-            onCreateProjectFromPath={handleCreateProjectFromPickerPath}
-            onResetToHome={handleResetWorkspaceToHome}
+        {showLegacyEmptyLandingControls ? (
+          <>
+            {isEmptyChatLanding ? (
+              <ProjectPicker
+                align="start"
+                side="top"
+                showResetToHome={Boolean(resolvedThreadWorktreePath)}
+                selectedWorkspaceRoot={resolvedThreadWorktreePath}
+                onSelectProject={handleSelectProjectForEmptyDraft}
+                onSelectWorkspaceRoot={handleSelectWorkspaceRoot}
+                onCreateProjectFromPath={handleCreateProjectFromPickerPath}
+                onResetToHome={handleResetWorkspaceToHome}
+              />
+            ) : showEmptyLandingProjectPicker ? (
+              <ProjectPicker
+                align="start"
+                side="top"
+                selectionMode="project"
+                selectedProjectId={activeProject.id}
+                selectedWorkspaceRoot={activeProject.cwd}
+                showResetToHome
+                onSelectProject={handleSelectProjectForEmptyDraft}
+                onCreateProjectFromPath={handleCreateProjectFromPickerPath}
+                onResetToHome={handleResetWorkspaceToHome}
+              />
+            ) : (
+              emptyLandingProjectChip
+            )}
+            <div
+              aria-hidden={showEmptyLandingBranchToolbar ? undefined : true}
+              className={cn(
+                "flex min-w-0 flex-1 items-center transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+                showEmptyLandingBranchToolbar
+                  ? "translate-y-0 opacity-100"
+                  : "pointer-events-none opacity-0",
+              )}
+            >
+              {showEmptyLandingBranchToolbar ? (
+                <BranchToolbar
+                  {...branchToolbarProps}
+                  className="mx-0 min-w-0 flex-1 !justify-start !px-0 !pb-0 !pt-0"
+                  showBranchSelector={isGitRepo}
+                />
+              ) : null}
+            </div>
+          </>
+        ) : null}
+        {showWorkspaceContextsBar ? (
+          <WorkspaceContextsBar
+            projects={workspaceContextProjects}
+            contexts={workspaceContexts}
+            activeContextId={activeWorkspaceContextId}
+            hasServerThread={isServerThread}
+            hidePrimaryChip={workspaceContexts.length === 0}
+            onBrowseFolder={() => {
+              void handleBrowseFolderForContext();
+            }}
+            onAddProjectContext={handleAddWorkspaceContext}
+            onAddBranchContext={handleAddWorkspaceBranchContext}
+            onRemoveContext={handleRemoveWorkspaceContext}
+            onMakePrimary={handleMakeWorkspaceContextPrimary}
+            onUpdateContext={handleUpdateWorkspaceContext}
+            onDismiss={() => setWorkspaceContextsBarOpen(false)}
           />
-        ) : showEmptyLandingProjectPicker ? (
-          <ProjectPicker
-            align="start"
-            side="top"
-            selectionMode="project"
-            selectedProjectId={activeProject.id}
-            selectedWorkspaceRoot={activeProject.cwd}
-            showResetToHome
-            onSelectProject={handleSelectProjectForEmptyDraft}
-            onCreateProjectFromPath={handleCreateProjectFromPickerPath}
-            onResetToHome={handleResetWorkspaceToHome}
-          />
-        ) : (
-          emptyLandingProjectChip
-        )}
-        {/* Reserve the Local/branch slot so project selection fades controls in without resizing. */}
-        <div
-          aria-hidden={showEmptyLandingBranchToolbar ? undefined : true}
-          className={cn(
-            "flex min-w-0 flex-1 items-center transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
-            showEmptyLandingBranchToolbar
-              ? "translate-y-0 opacity-100"
-              : "pointer-events-none opacity-0",
-          )}
-        >
-          {showEmptyLandingBranchToolbar ? (
-            <BranchToolbar
-              {...branchToolbarProps}
-              className="mx-0 min-w-0 flex-1 !justify-start !px-0 !pb-0 !pt-0"
-              showBranchSelector={isGitRepo}
-            />
-          ) : null}
-        </div>
+        ) : null}
       </div>
     ) : null;
 
@@ -9721,6 +10091,21 @@ export default function ChatView({
                         ? null
                         : renderComposerLeadingControls({ iconOnly: false })}
 
+                      {showWorkspaceContextsRevealControl ? (
+                        <Button
+                          variant="ghost"
+                          className="shrink-0 px-2 text-[length:var(--app-font-size-ui-sm,11px)] font-normal text-[var(--color-text-foreground-secondary)] hover:bg-[var(--color-background-button-secondary-hover)] hover:text-[var(--color-text-foreground)] sm:px-3"
+                          size="sm"
+                          type="button"
+                          title="Show workspace contexts"
+                          aria-label="Show workspace contexts"
+                          onClick={() => setWorkspaceContextsBarOpen(true)}
+                        >
+                          <FolderClosed className="size-3.5" aria-hidden="true" />
+                          <span className="sr-only">Show workspace contexts</span>
+                        </Button>
+                      ) : null}
+
                       {!isVoiceRecording && !isVoiceTranscribing ? (
                         <>
                           {interactionMode === "plan" ? (
@@ -9990,6 +10375,64 @@ export default function ChatView({
       </div>
     );
 
+  const threadChromeActionClusterProps: ChatHeaderActionClusterProps = {
+    variant: "island",
+    activeThreadId: activeThread.id,
+    activeProvider: activeThread.session?.provider ?? activeThread.modelSelection.provider,
+    activeProjectName: activeProjectDisplayName,
+    hideHandoffControls: terminalWorkspaceTerminalTabActive,
+    isGitRepo,
+    openInTarget: threadWorkspaceCwd,
+    activeProjectScripts,
+    preferredScriptId:
+      activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null,
+    keybindings,
+    availableEditors,
+    diffToggleShortcutLabel: diffPanelShortcutLabel,
+    handoffBadgeLabel,
+    handoffActionLabel,
+    handoffDisabled,
+    handoffActionTargetProviders: handoffTargetProviders,
+    handoffBadgeSourceProvider,
+    handoffBadgeTargetProvider,
+    gitCwd: threadWorkspaceCwd,
+    diffTotals: repoDiffTotals,
+    showGitActions,
+    showDiffToggle: true,
+    diffOpen: resolvedDiffOpen,
+    diffDisabledReason,
+    environment: environmentHeaderState,
+    chatLayoutAction:
+      surfaceMode === "single" && onSplitSurface
+        ? {
+            kind: "split",
+            label: "Split chat",
+            shortcutLabel: chatSplitShortcutLabel,
+            onClick: onSplitSurface,
+          }
+        : surfaceMode === "split" && isFocusedPane && onMaximizeSurface
+          ? {
+              kind: "maximize",
+              label: "Expand this chat",
+              shortcutLabel: null,
+              onClick: onMaximizeSurface,
+            }
+          : null,
+    changeThreadAction:
+      surfaceMode === "split" && isFocusedPane && onChangeThreadInSplitPane
+        ? {
+            label: "Change thread",
+            onClick: onChangeThreadInSplitPane,
+          }
+        : null,
+    onRunProjectScript: onRunProjectScriptFromHeader,
+    onAddProjectScript: saveProjectScript,
+    onUpdateProjectScript: updateProjectScript,
+    onDeleteProjectScript: deleteProjectScript,
+    onToggleDiff,
+    onCreateHandoff: onCreateHandoffThread,
+  };
+
   return (
     <div
       className={cn(
@@ -10011,109 +10454,91 @@ export default function ChatView({
           isDragOverComposer ? "opacity-100" : "opacity-0",
         )}
       />
-      {/* Top bar */}
-      <header
-        className={cn(
-          CHAT_SURFACE_HEADER_DIVIDER_CLASS_NAME,
-          !isEditorRail && CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-          "flex items-center",
-          isEditorRail ? "h-10" : CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-          isElectron && "drag-region",
-          // The editor-rail chat header sits in the editor's second row (inside the
-          // right-side chat pane), not flush against the window edges — the editor's
-          // own top bar already reserves both desktop window-control gutters. Applying
-          // them here just leaves redundant empty space on the sides.
-          !isEditorRail && desktopTopBarTrafficLightGutterClassName,
-          !isEditorRail && desktopTopBarWindowControlsGutterClassName,
-        )}
-      >
-        <ChatHeader
-          activeThreadId={activeThread.id}
-          activeThreadTitle={activeThreadDisplayTitle}
-          activeThreadEntryPoint={terminalState.entryPoint}
-          activeProvider={activeThread.session?.provider ?? activeThread.modelSelection.provider}
-          activeProjectName={isEditorRail ? undefined : activeProjectDisplayName}
-          threadBreadcrumbs={threadBreadcrumbs}
-          {...(isEditorRail
-            ? { className: cn(CHAT_SURFACE_HEADER_PADDING_X_CLASS, "h-full") }
-            : {})}
-          isSidechat={Boolean(activeThread.sidechatSourceThreadId)}
-          hideSidebarControls={isEditorRail}
-          hideHandoffControls={terminalWorkspaceTerminalTabActive || isEditorRail}
-          isGitRepo={isGitRepo}
-          openInTarget={threadWorkspaceCwd}
-          activeProjectScripts={isEditorRail ? undefined : activeProjectScripts}
-          preferredScriptId={
-            activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-          }
-          keybindings={keybindings}
-          availableEditors={availableEditors}
-          diffToggleShortcutLabel={diffPanelShortcutLabel}
-          handoffBadgeLabel={handoffBadgeLabel}
-          handoffActionLabel={handoffActionLabel}
-          handoffDisabled={handoffDisabled}
-          handoffActionTargetProviders={handoffTargetProviders}
-          handoffBadgeSourceProvider={handoffBadgeSourceProvider}
-          handoffBadgeTargetProvider={handoffBadgeTargetProvider}
-          gitCwd={threadWorkspaceCwd}
-          diffTotals={repoDiffTotals}
-          showGitActions={showGitActions && !isEditorRail}
-          showDiffToggle={!isEditorRail}
-          diffOpen={resolvedDiffOpen}
-          diffDisabledReason={diffDisabledReason}
-          environment={isEditorRail ? null : environmentHeaderState}
-          surfaceMode={surfaceMode}
-          chatLayoutAction={
-            surfaceMode === "single" && onSplitSurface
-              ? {
-                  kind: "split",
-                  label: "Split chat",
-                  shortcutLabel: chatSplitShortcutLabel,
-                  onClick: onSplitSurface,
-                }
-              : surfaceMode === "split" && isFocusedPane && onMaximizeSurface
+      {/* Thread actions render in AppTopBar islands; editor-rail keeps an inline header. */}
+      {!isEditorRail ? (
+        <ChatChromeActionsBridge>
+          <ChatHeaderActionCluster {...threadChromeActionClusterProps} />
+        </ChatChromeActionsBridge>
+      ) : (
+        <header
+          className={cn(
+            CHAT_SURFACE_HEADER_DIVIDER_CLASS_NAME,
+            CHAT_SURFACE_HEADER_PADDING_X_CLASS,
+            "flex h-10 items-center",
+            isElectron && "drag-region",
+          )}
+        >
+          <ChatHeader
+            activeThreadId={activeThread.id}
+            activeThreadTitle={activeThreadDisplayTitle}
+            activeThreadEntryPoint={terminalState.entryPoint}
+            activeProvider={activeThread.session?.provider ?? activeThread.modelSelection.provider}
+            activeProjectName={undefined}
+            threadBreadcrumbs={threadBreadcrumbs}
+            className={cn(CHAT_SURFACE_HEADER_PADDING_X_CLASS, "h-full")}
+            isSidechat={Boolean(activeThread.sidechatSourceThreadId)}
+            hideSidebarControls
+            hideThreadIdentity={false}
+            hideHandoffControls={terminalWorkspaceTerminalTabActive}
+            isGitRepo={isGitRepo}
+            openInTarget={threadWorkspaceCwd}
+            activeProjectScripts={undefined}
+            preferredScriptId={
+              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+            }
+            keybindings={keybindings}
+            availableEditors={availableEditors}
+            diffToggleShortcutLabel={diffPanelShortcutLabel}
+            handoffBadgeLabel={handoffBadgeLabel}
+            handoffActionLabel={handoffActionLabel}
+            handoffDisabled={handoffDisabled}
+            handoffActionTargetProviders={handoffTargetProviders}
+            handoffBadgeSourceProvider={handoffBadgeSourceProvider}
+            handoffBadgeTargetProvider={handoffBadgeTargetProvider}
+            gitCwd={threadWorkspaceCwd}
+            diffTotals={repoDiffTotals}
+            showGitActions={false}
+            showDiffToggle={false}
+            diffOpen={resolvedDiffOpen}
+            diffDisabledReason={diffDisabledReason}
+            environment={null}
+            surfaceMode={surfaceMode}
+            chatLayoutAction={null}
+            editorChatControls={
+              activeProject
                 ? {
-                    kind: "maximize",
-                    label: "Expand this chat",
-                    shortcutLabel: null,
-                    onClick: onMaximizeSurface,
+                    projectId: activeProject.id,
+                    activeSurface: terminalWorkspaceTerminalTabActive ? "terminal" : "chat",
+                    terminalAvailable: terminalState.terminalOpen,
+                    terminalHasRunningActivity: terminalState.runningTerminalIds.length > 0,
+                    onNewChat: onNewEditorChat,
+                    onNewTerminal: onOpenEditorTerminal,
+                    onOpenChat: onOpenEditorChat,
+                    onOpenTerminal: onOpenEditorTerminal,
+                    onCloseTerminal: onCloseEditorTerminal,
                   }
                 : null
-          }
-          editorChatControls={
-            isEditorRail && activeProject
-              ? {
-                  projectId: activeProject.id,
-                  activeSurface: terminalWorkspaceTerminalTabActive ? "terminal" : "chat",
-                  terminalAvailable: terminalState.terminalOpen,
-                  terminalHasRunningActivity: terminalState.runningTerminalIds.length > 0,
-                  onNewChat: onNewEditorChat,
-                  onNewTerminal: onOpenEditorTerminal,
-                  onOpenChat: onOpenEditorChat,
-                  onOpenTerminal: onOpenEditorTerminal,
-                  onCloseTerminal: onCloseEditorTerminal,
-                }
-              : null
-          }
-          changeThreadAction={
-            surfaceMode === "split" && isFocusedPane && onChangeThreadInSplitPane
-              ? {
-                  label: "Change thread",
-                  onClick: onChangeThreadInSplitPane,
-                }
-              : null
-          }
-          onRunProjectScript={onRunProjectScriptFromHeader}
-          onAddProjectScript={saveProjectScript}
-          onUpdateProjectScript={updateProjectScript}
-          onDeleteProjectScript={deleteProjectScript}
-          onToggleDiff={onToggleDiff}
-          onCreateHandoff={onCreateHandoffThread}
-          onNavigateToThread={onNavigateToThread}
-          onRenameThread={() => setRenameDialogOpen(true)}
-          {...(onCloseThreadPane ? { onCloseThreadPane } : {})}
-        />
-      </header>
+            }
+            changeThreadAction={
+              surfaceMode === "split" && isFocusedPane && onChangeThreadInSplitPane
+                ? {
+                    label: "Change thread",
+                    onClick: onChangeThreadInSplitPane,
+                  }
+                : null
+            }
+            onRunProjectScript={onRunProjectScriptFromHeader}
+            onAddProjectScript={saveProjectScript}
+            onUpdateProjectScript={updateProjectScript}
+            onDeleteProjectScript={deleteProjectScript}
+            onToggleDiff={onToggleDiff}
+            onCreateHandoff={onCreateHandoffThread}
+            onNavigateToThread={onNavigateToThread}
+            onRenameThread={() => setRenameDialogOpen(true)}
+            {...(onCloseThreadPane ? { onCloseThreadPane } : {})}
+          />
+        </header>
+      )}
 
       <RenameThreadDialog
         open={renameDialogOpen}

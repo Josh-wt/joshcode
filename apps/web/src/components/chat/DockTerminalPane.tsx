@@ -98,7 +98,6 @@ export function DockTerminalPane(props: {
       onResizeTerminalSplit={terminal.resizeTerminalSplit}
       onTerminalMetadataChange={terminal.setTerminalMetadata}
       onTerminalActivityChange={terminal.setTerminalActivity}
-      onAddTerminalContext={() => {}}
     />
   );
 }

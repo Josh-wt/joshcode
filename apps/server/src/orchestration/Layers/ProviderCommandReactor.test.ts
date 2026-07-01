@@ -484,6 +484,55 @@ describe("ProviderCommandReactor", () => {
     expect(input?.input).toContain("Fresh side question");
   });
 
+  it("uses worktree boundary instruction for isolated sidechat worktrees", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.fork.create",
+        commandId: CommandId.makeUnsafe("cmd-sidechat-worktree-fork-create"),
+        threadId: ThreadId.makeUnsafe("thread-sidechat-worktree"),
+        sourceThreadId: ThreadId.makeUnsafe("thread-1"),
+        sidechatSourceThreadId: ThreadId.makeUnsafe("thread-1"),
+        projectId: asProjectId("project-1"),
+        title: "Sidechat: Thread",
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        envMode: "worktree",
+        branch: "synara/sidechat-abc",
+        worktreePath: "/tmp/provider-project/.worktrees/synara-sidechat-abc",
+        importedMessages: [],
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-sidechat-worktree-turn-start"),
+        threadId: ThreadId.makeUnsafe("thread-sidechat-worktree"),
+        message: {
+          messageId: asMessageId("sidechat-worktree-user"),
+          role: "user",
+          text: "Try a patch in isolation",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const input = harness.sendTurn.mock.calls[0]?.[0] as { input?: string } | undefined;
+    expect(input?.input).toContain("isolated git worktree");
+    expect(input?.input).toContain("You may edit files");
+  });
+
   it("rolls back provider conversation state for message edits", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

@@ -25,6 +25,7 @@ import {
   ProviderItemId,
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
+  type ProviderSessionStartInput,
   type ProviderSession,
   RuntimeItemId,
   RuntimeRequestId,

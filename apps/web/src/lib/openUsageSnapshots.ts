@@ -88,11 +88,16 @@ function normalizeProgressLine(value: unknown): OpenUsageProgressLine | null {
     used,
     limit,
     format: normalizeProgressFormat(parsed.format),
-    ...(asString(parsed.resetsAt) ? { resetsAt: asString(parsed.resetsAt) } : {}),
-    ...(asFiniteNumber(parsed.periodDurationMs) !== undefined
-      ? { periodDurationMs: asFiniteNumber(parsed.periodDurationMs) }
-      : {}),
-    ...(asString(parsed.color) ? { color: asString(parsed.color) } : {}),
+    ...((): Partial<OpenUsageProgressLine> => {
+      const resetsAt = asString(parsed.resetsAt);
+      const periodDurationMs = asFiniteNumber(parsed.periodDurationMs);
+      const color = asString(parsed.color);
+      return {
+        ...(resetsAt ? { resetsAt } : {}),
+        ...(periodDurationMs !== undefined ? { periodDurationMs } : {}),
+        ...(color ? { color } : {}),
+      };
+    })(),
   };
 }
 
@@ -108,8 +113,14 @@ function normalizeTextLine(value: unknown): OpenUsageTextLine | null {
     type: "text",
     label,
     value: valueText,
-    ...(asString(parsed.subtitle) ? { subtitle: asString(parsed.subtitle) } : {}),
-    ...(asString(parsed.color) ? { color: asString(parsed.color) } : {}),
+    ...((): Partial<OpenUsageTextLine> => {
+      const subtitle = asString(parsed.subtitle);
+      const color = asString(parsed.color);
+      return {
+        ...(subtitle ? { subtitle } : {}),
+        ...(color ? { color } : {}),
+      };
+    })(),
   };
 }
 
@@ -151,10 +162,12 @@ export function normalizeOpenUsageProviderSnapshot(value: unknown): OpenUsagePro
     asString(parsed.displayName) ??
     (providerKind ? PROVIDER_DISPLAY_NAMES[providerKind] : providerId);
 
+  const plan = asString(parsed.plan);
+
   return {
     providerId,
     displayName,
-    ...(asString(parsed.plan) ? { plan: asString(parsed.plan) } : {}),
+    ...(plan ? { plan } : {}),
     lines,
     fetchedAt: asString(parsed.fetchedAt) ?? new Date().toISOString(),
     providerKind,

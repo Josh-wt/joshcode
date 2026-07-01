@@ -21,7 +21,6 @@ import {
   CHAT_SURFACE_HEADER_PADDING_X_CLASS,
 } from "~/components/chat/chatHeaderControls";
 import { CHAT_BACKGROUND_CLASS_NAME } from "~/components/chat/composerPickerStyles";
-import { SidebarHeaderNavigationControls } from "~/components/SidebarHeaderNavigationControls";
 import { Button } from "~/components/ui/button";
 import { RouteInsetSurface } from "~/components/RouteInsetSurface";
 import {
@@ -218,7 +217,6 @@ function AutomationDetailView() {
             <div
               className={cn("flex items-center gap-2 sm:gap-3", CHAT_SURFACE_HEADER_HEIGHT_CLASS)}
             >
-              <SidebarHeaderNavigationControls />
               <h1 className="truncate font-heading text-sm font-medium">Automations</h1>
             </div>
           </header>
@@ -378,7 +376,6 @@ function AutomationDetailView() {
             <div
               className={cn("flex items-center gap-2 sm:gap-3", CHAT_SURFACE_HEADER_HEIGHT_CLASS)}
             >
-              <SidebarHeaderNavigationControls />
               <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm [-webkit-app-region:no-drag]">
                 <button
                   type="button"

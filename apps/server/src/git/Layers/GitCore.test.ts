@@ -2173,6 +2173,30 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
+    it.effect("refreshes remotes before listing when refreshRemotes is true", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(tmp, ["remote", "add", "origin", remote]);
+
+        const realGitCore = yield* GitCore;
+        let didFetchRemotes = false;
+        const core = yield* makeIsolatedGitCore((input) => {
+          if (input.args.join(" ") === "fetch --quiet --no-tags --all") {
+            didFetchRemotes = true;
+          }
+          return realGitCore.execute(input);
+        });
+
+        const result = yield* core.listBranches({ cwd: tmp, refreshRemotes: true });
+
+        expect(result.isRepo).toBe(true);
+        expect(didFetchRemotes).toBe(true);
+      }),
+    );
+
     it.effect("falls back to empty remote branch data when remote lookups fail", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

@@ -57,7 +57,6 @@ import {
 import { cn } from "~/lib/utils";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "./ui/input-group";
 import { SidebarInset } from "./ui/sidebar";
-import { SidebarHeaderNavigationControls } from "./SidebarHeaderNavigationControls";
 import {
   useDesktopTopBarTrafficLightGutterClassName,
   useDesktopTopBarWindowControlsGutterClassName,
@@ -566,7 +565,6 @@ export function PluginLibrary() {
             desktopTopBarWindowControlsGutterClassName,
           )}
         >
-          <SidebarHeaderNavigationControls />
           <div className="flex items-end gap-3">
             <TabButton
               label="Plugins"

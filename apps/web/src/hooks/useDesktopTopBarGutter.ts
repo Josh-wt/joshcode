@@ -10,8 +10,8 @@ import {
 import { useLayoutEffect } from "react";
 
 import { isElectron } from "~/env";
-import { useSidebar } from "~/components/ui/sidebar";
-import { isMacPlatform, isWindowsPlatform } from "~/lib/utils";
+import { useIsMobile } from "~/hooks/useMediaQuery";
+import { isLinuxPlatform, isMacPlatform, isWindowsPlatform } from "~/lib/utils";
 
 /**
  * Class name backed by `index.css` (not Tailwind) so the gutter survives zoom
@@ -26,15 +26,11 @@ export const DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER_CLASS = "desktop-top-bar-traff
  * The traffic lights live in the renderer area (titleBarStyle = "hiddenInset"),
  * so any chrome surface that sits flush against the window's left edge needs a
  * gutter, or its leading controls will collide with the close/minimize/zoom
- * buttons. The sidebar always sits on the left and provides that gutter while it
- * is open; when it is collapsed — or on mobile, where the drawer floats over
- * content instead of reserving a column — the next surface to the right has to
- * provide it instead.
+ * buttons. Without a left sidebar the unified app top bar always owns the left edge.
  */
 export function shouldReserveDesktopTopBarTrafficLightGutter(input: {
   isElectron: boolean;
   isMacDesktop: boolean;
-  sidebarOpen: boolean;
   isMobile: boolean;
 }): boolean {
   if (!input.isElectron) return false;
@@ -42,7 +38,7 @@ export function shouldReserveDesktopTopBarTrafficLightGutter(input: {
   // Mobile drawers float above content rather than reserving a column,
   // so the chat header always owns the left edge in that mode.
   if (input.isMobile) return true;
-  return !input.sidebarOpen;
+  return true;
 }
 
 function readDesktopZoomFactor(): number {
@@ -98,12 +94,11 @@ export function useSyncDesktopTopBarTrafficLightGutterZoom(): void {
  * window's left edge: chat header, settings header, workspace header, etc.
  */
 export function useDesktopTopBarTrafficLightGutterClassName(): string | null {
-  const { isMobile, open } = useSidebar();
+  const isMobile = useIsMobile();
   const isMacDesktop = typeof navigator !== "undefined" ? isMacPlatform(navigator.platform) : false;
   return shouldReserveDesktopTopBarTrafficLightGutter({
     isElectron,
     isMacDesktop,
-    sidebarOpen: open,
     isMobile,
   })
     ? DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER_CLASS
@@ -113,7 +108,7 @@ export function useDesktopTopBarTrafficLightGutterClassName(): string | null {
 /**
  * Tailwind padding that clears the Windows caption-button cluster.
  *
- * On Windows the Electron shell is frameless (`frame: false`, see apps/desktop
+ * On Windows and Linux the Electron shell is frameless (`frame: false`, see apps/desktop
  * main) and the renderer owns the minimize/maximize/close buttons. They are
  * rendered ONCE as a viewport-fixed cluster pinned to the window's top-right
  * corner (see {@link DesktopWindowControls} mounted in the root route), mirroring
@@ -139,9 +134,9 @@ export const DESKTOP_TOP_BAR_WINDOW_CONTROLS_GUTTER_CLASS = "pr-[138px]! sm:pr-[
  */
 export function shouldReserveDesktopTopBarWindowControlsGutter(input: {
   isElectron: boolean;
-  isWindowsDesktop: boolean;
+  isFramelessDesktop: boolean;
 }): boolean {
-  return input.isElectron && input.isWindowsDesktop;
+  return input.isElectron && input.isFramelessDesktop;
 }
 
 /**
@@ -152,11 +147,11 @@ export function shouldReserveDesktopTopBarWindowControlsGutter(input: {
  * right edge: chat header, workspace header, plugin nav, the right dock header, etc.
  */
 export function useDesktopTopBarWindowControlsGutterClassName(): string | null {
-  const isWindowsDesktop =
-    typeof navigator !== "undefined" ? isWindowsPlatform(navigator.platform) : false;
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
+  const isFramelessDesktop = isWindowsPlatform(platform) || isLinuxPlatform(platform);
   return shouldReserveDesktopTopBarWindowControlsGutter({
     isElectron,
-    isWindowsDesktop,
+    isFramelessDesktop,
   })
     ? DESKTOP_TOP_BAR_WINDOW_CONTROLS_GUTTER_CLASS
     : null;

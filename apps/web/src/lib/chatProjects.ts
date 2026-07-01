@@ -144,7 +144,9 @@ function hasThreadsForProject(projectId: ProjectId): boolean {
     .some((thread) => thread?.projectId === projectId);
 }
 
-function scoreHomeChatProject(project: Project, input: ServerWorkspacePaths): number {
+function scoreHomeChatProject<
+  T extends Pick<Project, "id" | "kind" | "cwd" | "name" | "remoteName">,
+>(project: T, input: ServerWorkspacePaths): number {
   const homeDir = input.homeDir?.trim() ?? "";
   let score = 0;
   if (hasThreadsForProject(project.id)) score += 8;
@@ -161,6 +163,41 @@ export function findHomeChatContainerProject<
     return null;
   }
   return projects.find((project) => isHomeChatContainerProject(project, paths)) ?? null;
+}
+
+export function resolveHomeChatContainerGrouping<
+  T extends Pick<Project, "id" | "cwd" | "kind" | "name" | "remoteName">,
+>(
+  projects: readonly T[],
+  paths: ServerWorkspacePaths,
+): {
+  canonicalProjectId: ProjectId | null;
+  projectIdAliases: ReadonlyMap<ProjectId, ProjectId>;
+} {
+  const chatContainers = projects.filter((project) => isHomeChatContainerProject(project, paths));
+  if (chatContainers.length === 0) {
+    return { canonicalProjectId: null, projectIdAliases: new Map() };
+  }
+
+  const canonical =
+    [...chatContainers].sort(
+      (left, right) => scoreHomeChatProject(right, paths) - scoreHomeChatProject(left, paths),
+    )[0] ?? null;
+  if (!canonical) {
+    return { canonicalProjectId: null, projectIdAliases: new Map() };
+  }
+
+  const projectIdAliases = new Map<ProjectId, ProjectId>();
+  for (const project of chatContainers) {
+    if (project.id !== canonical.id) {
+      projectIdAliases.set(project.id, canonical.id);
+    }
+  }
+
+  return {
+    canonicalProjectId: canonical.id,
+    projectIdAliases,
+  };
 }
 
 function findCanonicalHomeProject(input: ServerWorkspacePaths): {
@@ -186,9 +223,7 @@ function findCanonicalHomeProject(input: ServerWorkspacePaths): {
 
   const duplicateProjectIds = homeProjects
     .filter((project) => project.id !== canonicalProject.id)
-    .flatMap((project) => {
-      return hasThreadsForProject(project.id) ? [] : [project.id];
-    });
+    .map((project) => project.id);
 
   return {
     canonicalProjectId: canonicalProject.id,
@@ -214,6 +249,21 @@ async function fixupHomeChatProject(input: ServerWorkspacePaths): Promise<void> 
   }
 
   for (const duplicateProjectId of duplicateProjectIds) {
+    const threads = (useStore.getState().threadIds ?? [])
+      .map((threadId) => getThreadFromState(useStore.getState(), threadId))
+      .filter(
+        (thread): thread is NonNullable<ReturnType<typeof getThreadFromState>> =>
+          thread != null && thread.projectId === duplicateProjectId,
+      );
+    for (const thread of threads) {
+      await api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: thread.id,
+        projectId: canonicalProjectId,
+      });
+    }
+
     await api.orchestration.dispatchCommand({
       type: "project.delete",
       commandId: newCommandId(),

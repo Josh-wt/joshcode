@@ -35,6 +35,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  type ProviderSessionStartInput,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -80,6 +81,8 @@ import {
 } from "effect";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ensureClaudeCredentialsFresh } from "../../claudeCredentials.ts";
+import { prepareClaudeRuntimeEnvironment } from "../../claudeProcessEnv.ts";
 import { ServerConfig } from "../../config.ts";
 import { buildFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { positiveFiniteNumber } from "../tokenUsage.ts";
@@ -3298,6 +3301,25 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(ultracode ? { ultracode: true } : {}),
         };
         const claudeSubagents = buildClaudeSdkSubagents();
+        const claudeEnv = yield* Effect.tryPromise({
+          try: () =>
+            prepareClaudeRuntimeEnvironment({
+              homeDir: serverConfig.homeDir,
+            }).catch((cause) => {
+              console.warn(
+                "[claude] Failed to prepare runtime environment; falling back to process.env.",
+                cause,
+              );
+              return process.env;
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Failed to prepare Claude runtime environment",
+              cause,
+            }),
+        });
 
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -3328,7 +3350,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: process.env,
+          env: claudeEnv,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         };
 
@@ -3498,11 +3520,57 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
       });
 
+    const ensureFreshClaudeRuntimeBeforeTurn = (
+      context: ClaudeSessionContext,
+      modelSelection:
+        | Extract<ProviderSessionStartInput["modelSelection"], object>
+        | undefined,
+    ) =>
+      Effect.gen(function* () {
+        const credentialsRefreshed = yield* Effect.tryPromise({
+          try: () =>
+            ensureClaudeCredentialsFresh({
+              homeDir: serverConfig.homeDir,
+            }).catch(() => false),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: context.session.threadId,
+              detail: "Failed to refresh Claude credentials",
+              cause,
+            }),
+        });
+        if (!credentialsRefreshed) {
+          return;
+        }
+
+        yield* Effect.logInfo("claude.session.recycle_after_credential_refresh", {
+          threadId: context.session.threadId,
+        });
+
+        yield* stopSessionInternal(context, { emitExitEvent: false });
+        yield* startSession({
+          threadId: context.session.threadId,
+          provider: PROVIDER,
+          runtimeMode: context.session.runtimeMode,
+          ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
+          workspaceContexts: context.session.workspaceContexts,
+          activeWorkspaceContextId: context.session.activeWorkspaceContextId,
+          ...(context.session.resumeCursor !== undefined
+            ? { resumeCursor: context.session.resumeCursor }
+            : {}),
+          ...(modelSelection ? { modelSelection } : {}),
+        });
+      });
+
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const context = yield* requireSession(input.threadId);
+        let context = yield* requireSession(input.threadId);
         const modelSelection =
           input.modelSelection?.provider === "claudeAgent" ? input.modelSelection : undefined;
+
+        yield* ensureFreshClaudeRuntimeBeforeTurn(context, modelSelection);
+        context = yield* requireSession(input.threadId);
         const requestedContextWindowMaxTokens = resolveSelectedClaudeContextWindowMaxTokens(
           modelSelection?.model,
           modelSelection?.options?.contextWindow,

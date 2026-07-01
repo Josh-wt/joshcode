@@ -1684,6 +1684,14 @@ function normalizeThreadFromReadModel(
     currentCreateBranchFlowCompleted: previous?.createBranchFlowCompleted,
     nextCreateBranchFlowCompleted: incoming.createBranchFlowCompleted,
   });
+  const nextWorkspaceContexts =
+    incoming.workspaceContexts !== undefined
+      ? incoming.workspaceContexts
+      : (previous?.workspaceContexts ?? []);
+  const nextActiveWorkspaceContextId =
+    incoming.activeWorkspaceContextId !== undefined
+      ? incoming.activeWorkspaceContextId
+      : (previous?.activeWorkspaceContextId ?? null);
   const pendingSourceProposedPlan =
     latestTurn?.sourceProposedPlan ??
     (incoming.session?.status === "running" ? previous?.pendingSourceProposedPlan : undefined);
@@ -1723,6 +1731,8 @@ function normalizeThreadFromReadModel(
     previous.hasActionableProposedPlan === resolvedHasActionableProposedPlan &&
     (previous.forkSourceThreadId ?? null) === (incoming.forkSourceThreadId ?? null) &&
     (previous.sidechatSourceThreadId ?? null) === (incoming.sidechatSourceThreadId ?? null) &&
+    deepEqualJson(previous.workspaceContexts ?? [], nextWorkspaceContexts) &&
+    (previous.activeWorkspaceContextId ?? null) === nextActiveWorkspaceContextId &&
     deepEqualJson(previous.lastKnownPr ?? null, lastKnownPr) &&
     (previous.handoff ?? null) === handoff &&
     previous.pinnedMessages === pinnedMessages &&
@@ -1764,6 +1774,8 @@ function normalizeThreadFromReadModel(
     associatedWorktreeBranch: nextAssociatedWorktreeBranch,
     associatedWorktreeRef: nextAssociatedWorktreeRef,
     createBranchFlowCompleted: resolvedCreateBranchFlowCompleted,
+    workspaceContexts: nextWorkspaceContexts,
+    activeWorkspaceContextId: nextActiveWorkspaceContextId,
     forkSourceThreadId: incoming.forkSourceThreadId ?? null,
     sidechatSourceThreadId: incoming.sidechatSourceThreadId ?? null,
     lastKnownPr,
@@ -3213,6 +3225,14 @@ function applyOrchestrationEvent(
             currentCreateBranchFlowCompleted: thread.createBranchFlowCompleted,
             nextCreateBranchFlowCompleted: event.payload.createBranchFlowCompleted,
           });
+          const nextWorkspaceContexts =
+            event.payload.workspaceContexts !== undefined
+              ? event.payload.workspaceContexts
+              : (thread.workspaceContexts ?? []);
+          const nextActiveWorkspaceContextId =
+            event.payload.activeWorkspaceContextId !== undefined
+              ? event.payload.activeWorkspaceContextId
+              : (thread.activeWorkspaceContextId ?? null);
           const nextUpdatedAt =
             (thread.updatedAt ?? thread.createdAt) > event.payload.updatedAt
               ? thread.updatedAt
@@ -3229,6 +3249,8 @@ function applyOrchestrationEvent(
             nextAssociatedWorktreeBranch === (thread.associatedWorktreeBranch ?? null) &&
             nextAssociatedWorktreeRef === (thread.associatedWorktreeRef ?? null) &&
             nextCreateBranchFlowCompleted === (thread.createBranchFlowCompleted ?? false) &&
+            deepEqualJson(nextWorkspaceContexts, thread.workspaceContexts ?? []) &&
+            nextActiveWorkspaceContextId === (thread.activeWorkspaceContextId ?? null) &&
             (event.payload.isPinned === undefined ||
               event.payload.isPinned === (thread.isPinned ?? false)) &&
             (event.payload.parentThreadId === undefined ||
@@ -3264,6 +3286,8 @@ function applyOrchestrationEvent(
             associatedWorktreeBranch: nextAssociatedWorktreeBranch,
             associatedWorktreeRef: nextAssociatedWorktreeRef,
             createBranchFlowCompleted: nextCreateBranchFlowCompleted,
+            workspaceContexts: nextWorkspaceContexts,
+            activeWorkspaceContextId: nextActiveWorkspaceContextId,
             ...(event.payload.isPinned !== undefined ? { isPinned: event.payload.isPinned } : {}),
             ...(event.payload.parentThreadId !== undefined
               ? { parentThreadId: event.payload.parentThreadId }
@@ -4343,6 +4367,12 @@ export function setThreadWorkspace(
       currentCreateBranchFlowCompleted: t.createBranchFlowCompleted,
       nextCreateBranchFlowCompleted: patch.createBranchFlowCompleted,
     });
+    const nextWorkspaceContexts =
+      patch.workspaceContexts !== undefined ? patch.workspaceContexts : (t.workspaceContexts ?? []);
+    const nextActiveWorkspaceContextId =
+      patch.activeWorkspaceContextId !== undefined
+        ? patch.activeWorkspaceContextId
+        : (t.activeWorkspaceContextId ?? null);
     if (
       t.envMode === nextEnvMode &&
       t.branch === nextBranch &&
@@ -4350,7 +4380,9 @@ export function setThreadWorkspace(
       (t.associatedWorktreePath ?? null) === nextAssociatedWorktreePath &&
       (t.associatedWorktreeBranch ?? null) === nextAssociatedWorktreeBranch &&
       (t.associatedWorktreeRef ?? null) === nextAssociatedWorktreeRef &&
-      (t.createBranchFlowCompleted ?? false) === nextCreateBranchFlowCompleted
+      (t.createBranchFlowCompleted ?? false) === nextCreateBranchFlowCompleted &&
+      deepEqualJson(t.workspaceContexts ?? [], nextWorkspaceContexts) &&
+      (t.activeWorkspaceContextId ?? null) === nextActiveWorkspaceContextId
     ) {
       return t;
     }
@@ -4364,6 +4396,8 @@ export function setThreadWorkspace(
       associatedWorktreeBranch: nextAssociatedWorktreeBranch,
       associatedWorktreeRef: nextAssociatedWorktreeRef,
       createBranchFlowCompleted: nextCreateBranchFlowCompleted,
+      workspaceContexts: nextWorkspaceContexts,
+      activeWorkspaceContextId: nextActiveWorkspaceContextId,
       ...(cwdChanged ? { session: null } : {}),
     };
   });
