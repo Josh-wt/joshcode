@@ -84,3 +84,20 @@ Docs:
 - Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
 
 Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+
+## Cursor Cloud specific instructions
+
+Toolchain (Node `24.13.1` + Bun, per `.mise.toml`/`engines`) and JS deps come from the VM snapshot; the startup update script only runs `bun install`. Note the base image ships an older `node` at `/exec-daemon/node` (v22); a line appended to `~/.bashrc` puts nvm's Node 24 first on `PATH`, so use a login shell (`bash -l`) when running commands.
+
+Running the dev stack in this headless VM has one non-obvious gotcha: `bun run dev` launches Turbo in parallel, and the `t3` server task gets **suspended by job control (SIGTTOU)** the moment it is started in a background/non-interactive process group — it stalls right after logging `orchestration engine started` and never reaches `Synara running`, so port 3773 never opens. Start it detached from the controlling terminal instead:
+
+```sh
+setsid env -u T3CODE_AUTH_TOKEN T3CODE_NO_BROWSER=1 TURBO_UI=stream \
+  bun run dev -- --home-dir ./.synara-dev < /dev/null > /tmp/synara-dev.log 2>&1 &
+```
+
+`TURBO_UI=stream` avoids the TUI (which does not render in a pipe), `< /dev/null` + `setsid` avoid the tty stop, and `--home-dir ./.synara-dev` keeps state isolated (`.synara-*` is gitignored). Web serves on `http://localhost:5733`, server/WebSocket on `3773` (server root 302-redirects to the Vite URL in dev). The active SQLite state lives at `<home-dir>/dev/state.sqlite` (not `userdata/`) when a `--home-dir` is passed.
+
+Provider agent runs need external CLIs (e.g. `codex`, `claude`) that are NOT installed here, so real agent turns will report the provider missing. The UI, backend, WebSocket, migrations, and project/thread flows all work without them — adding a project (`Ctrl+Shift+O` → "Type path") persists to the projections DB and is a good end-to-end smoke check.
+
+Standard checks are the package.json scripts and mirror CI (`.github/workflows/ci.yml`): `bun run fmt:check`, `bun run lint`, `bun run typecheck`, `bun run test` (Vitest), `bun run build:desktop`, plus `node scripts/node-pty-smoke.mjs` to verify the native PTY.
